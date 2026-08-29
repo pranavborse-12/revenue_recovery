@@ -1,0 +1,14 @@
+[project]
+name = "revenue-recovery-agent"
+version = "0.1.0"
+description = "AI-powered revenue recovery platform -- Phase 1: Razorpay webhook ingestion foundation"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+disallow_untyped_defs = true
+ignore_missing_imports = true
