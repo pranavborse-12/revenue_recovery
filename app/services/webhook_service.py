@@ -30,6 +30,13 @@ status) -- that's a much fuzzier problem (the same payment can
 legitimately produce multiple *different* events, like failed-then-
 captured on a UPI retry) and is out of scope for Phase 1's basic
 idempotency mechanism.
+
+Payment-Link correlation fix (this debugging session): the same-order
+match in payment_service is unchanged and still runs first. Only when it
+finds nothing, and only for payment.captured, do we hand off to a
+bounded Celery-based fallback (recovery_service.resolve_via_payment_link,
+run via app.tasks.customer_recovery_tasks.resolve_unmatched_capture) --
+see that task's docstring for why this isn't done inline here.
 """
 
 from dataclasses import dataclass
@@ -178,6 +185,22 @@ def _run_payment_recovery_pipeline(db: Session, event: RazorpayWebhookEvent) -> 
 
     if result.linked_retry_of is not None:
         recovery_service.on_payment_captured_via_retry(db, result.linked_retry_of)
+    elif event.event == "payment.captured":
+        # Same-order correlation found nothing. Before concluding this is
+        # just an ordinary, unrelated payment, check whether it actually
+        # resolves an AWAITING_CUSTOMER case's Payment Link -- Razorpay
+        # mints a brand-new order per Payment Link, so the same-order
+        # check can never see that relationship (confirmed via live
+        # debugging; see recovery_service.resolve_via_payment_link).
+        # Deliberately NOT done inline here: it may call Razorpay, and
+        # this function runs inside the webhook's own DB transaction --
+        # an external call here would risk delaying/failing webhook
+        # acknowledgement. Handed to Celery instead, same as every other
+        # external-API step in this project.
+        from app.tasks.customer_recovery_tasks import resolve_unmatched_capture
+
+        db.flush()  # ensure result.payment.id is assigned before the task can look it up
+        resolve_unmatched_capture.apply_async(args=[result.payment.id], countdown=0)
 
 
 def _log_event_summary(event: RazorpayWebhookEvent) -> None:

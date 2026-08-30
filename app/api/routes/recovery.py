@@ -5,12 +5,22 @@ Recovery API.
     GET  /api/v1/recovery/cases/{id}
     GET  /api/v1/recovery/stats
     POST /api/v1/recovery/cases/{id}/retry
+    POST /api/v1/recovery/cases/{id}/recover-now   (Phase 3)
 
-Read-focused, exposing business state (cases, actions, aggregate stats),
-not raw database rows. POST /retry is the one write endpoint -- a manual
-override to trigger the next retry immediately instead of waiting for
-its scheduled time, useful for demoing/testing the flow without waiting
-out the real delay.
+Phase 3 changes:
+  - get_recovery_case now also returns the case's payment link (if any)
+    and communication history.
+  - get_recovery_stats now also reports awaiting_customer_cases, and
+    "active"/"at risk" figures include AWAITING_CUSTOMER (via
+    ACTIVE_RECOVERY_CASE_STATUSES) since that revenue is still at risk,
+    just via a different recovery path.
+  - New POST /cases/{id}/recover-now: manual override to (re)run
+    customer-assisted recovery immediately for an AWAITING_CUSTOMER
+    case, mirroring the existing /retry endpoint's purpose (bypass the
+    normal trigger for demoing/testing/ops). No separate customer-facing
+    endpoint is added -- Razorpay's own payment_link.short_url IS the
+    secure public surface the customer uses; we don't need to build or
+    expose one of our own.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,9 +30,12 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db.session import get_db
 from app.models.payment import Payment
+from app.models.payment_link import PaymentLink
 from app.models.recovery_action import RecoveryAction
-from app.models.recovery_case import RecoveryCase
+from app.models.recovery_case import ACTIVE_RECOVERY_CASE_STATUSES, RecoveryCase
+from app.models.recovery_communication import RecoveryCommunication
 from app.schemas.recovery import (
+    CustomerRecoveryTriggerResponse,
     RecoveryCaseDetailOut,
     RecoveryCaseOut,
     RecoveryStatsOut,
@@ -60,6 +73,18 @@ def get_recovery_case(case_id: int, db: Session = Depends(get_db)) -> RecoveryCa
             .order_by(RecoveryAction.attempt_number)
         )
     )
+    payment_link = db.scalars(
+        select(PaymentLink)
+        .where(PaymentLink.recovery_case_id == case.id)
+        .order_by(PaymentLink.created_at.desc())
+    ).first()
+    communications = list(
+        db.scalars(
+            select(RecoveryCommunication)
+            .where(RecoveryCommunication.recovery_case_id == case.id)
+            .order_by(RecoveryCommunication.created_at)
+        )
+    )
 
     return RecoveryCaseDetailOut(
         id=case.id,
@@ -76,6 +101,8 @@ def get_recovery_case(case_id: int, db: Session = Depends(get_db)) -> RecoveryCa
         razorpay_payment_id=payment.razorpay_payment_id if payment else "",
         razorpay_order_id=payment.razorpay_order_id if payment else None,
         currency=payment.currency if payment else "",
+        payment_link=payment_link,
+        communications=communications,
     )
 
 
@@ -87,7 +114,7 @@ def get_recovery_stats(db: Session = Depends(get_db)) -> RecoveryStatsOut:
 
     total_revenue_at_risk = db.scalar(
         select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
-            RecoveryCase.status.in_(("OPEN", "IN_PROGRESS"))
+            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES)
         )
     ) or 0
 
@@ -99,8 +126,12 @@ def get_recovery_stats(db: Session = Depends(get_db)) -> RecoveryStatsOut:
 
     active_recovery_cases = db.scalar(
         select(func.count(RecoveryCase.id)).where(
-            RecoveryCase.status.in_(("OPEN", "IN_PROGRESS"))
+            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES)
         )
+    ) or 0
+
+    awaiting_customer_cases = db.scalar(
+        select(func.count(RecoveryCase.id)).where(RecoveryCase.status == "AWAITING_CUSTOMER")
     ) or 0
 
     recovered_cases = db.scalar(
@@ -121,18 +152,14 @@ def get_recovery_stats(db: Session = Depends(get_db)) -> RecoveryStatsOut:
         active_recovery_cases=active_recovery_cases,
         recovered_cases=recovered_cases,
         exhausted_cases=exhausted_cases,
+        awaiting_customer_cases=awaiting_customer_cases,
         recovery_rate=round(recovery_rate, 4),
     )
 
 
 @router.post("/cases/{case_id}/retry", response_model=RetryNowResponse)
 def retry_recovery_case_now(case_id: int, db: Session = Depends(get_db)) -> RetryNowResponse:
-    """
-    Manually trigger the next pending action for a case immediately,
-    instead of waiting for its scheduled ETA. Only valid for cases that
-    are OPEN or IN_PROGRESS with a PENDING action -- anything else is
-    rejected rather than silently ignored.
-    """
+    """Unchanged from Phase 2."""
     case = db.get(RecoveryCase, case_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery case not found")
@@ -172,14 +199,46 @@ def retry_recovery_case_now(case_id: int, db: Session = Depends(get_db)) -> Retr
     _enqueue_action(pending_action, immediate=True)
 
     logger.info(
-        "Manually triggered immediate execution of recovery_action_id=%s "
-        "(recovery_case_id=%s)",
-        pending_action.id,
-        case.id,
+        "Manually triggered immediate execution of recovery_action_id=%s (recovery_case_id=%s)",
+        pending_action.id, case.id,
     )
 
     return RetryNowResponse(
         recovery_case_id=case.id,
         status="triggered",
         detail=f"Action {pending_action.id} enqueued for immediate execution",
+    )
+
+
+@router.post("/cases/{case_id}/recover-now", response_model=CustomerRecoveryTriggerResponse)
+def trigger_customer_recovery_now(case_id: int, db: Session = Depends(get_db)) -> CustomerRecoveryTriggerResponse:
+    """
+    Manually (re)trigger customer-assisted recovery for an
+    AWAITING_CUSTOMER case -- normally this fires automatically the
+    moment a case enters that status (see recovery_service.
+    _route_exhausted_case), so this exists only as an ops/demo override,
+    same purpose as the existing /retry endpoint for RETRY_PAYMENT cases.
+    Idempotent: if a payment link/email already exist, the task reuses
+    them rather than creating duplicates.
+    """
+    case = db.get(RecoveryCase, case_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery case not found")
+
+    if case.status != "AWAITING_CUSTOMER":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot trigger customer recovery for a case in status {case.status}",
+        )
+
+    from app.tasks.customer_recovery_tasks import run_customer_recovery
+
+    run_customer_recovery.apply_async(args=[case.id], countdown=0)
+
+    logger.info("Manually triggered customer recovery for recovery_case_id=%s", case.id)
+
+    return CustomerRecoveryTriggerResponse(
+        recovery_case_id=case.id,
+        status="triggered",
+        detail="Customer recovery (payment link + email) enqueued for immediate execution",
     )

@@ -17,9 +17,12 @@ doesn't need to branch on action_type today -- if a later phase
 auto-executes other action types, add that branching then.
 """
 
+from sqlalchemy import select
+
 from app.core.logging import configure_logging, get_logger
 from app.db.session import SessionLocal
 from app.models.payment import Payment
+from app.models.payment_link import ACTIVE_PAYMENT_LINK_STATUSES, PaymentLink
 from app.models.recovery_action import InvalidRecoveryActionTransition, RecoveryAction
 from app.models.recovery_case import RecoveryCase
 from app.services import recovery_service
@@ -132,17 +135,48 @@ def execute_recovery_action(self, action_id: int) -> str:
             return f"skipped: resolved concurrently, now status={action.status}"
 
         if outcome.status == "AWAITING_WEBHOOK":
-            # Leave the action in PROCESSING. Its resolution will come
-            # from a future payment.captured/payment.failed webhook for
-            # the new payment attempt, handled by the normal Phase 1/2
-            # pipeline (payment_service's retry-link detection), which
-            # calls recovery_service.on_payment_captured_via_retry ->
-            # marks this case RECOVERED and cancels this (already-
-            # PROCESSING) action's siblings. We still mark payment
-            # RETRYING here so its status reflects reality in the
-            # meantime.
+            # The retry payment link was successfully created by Razorpay,
+            # but the final success/failure is still pending a webhook from
+            # the newly-created payment attempt. Persist the link itself so
+            # the later AWAITING_CUSTOMER/customer-recovery flow can reuse it
+            # rather than creating duplicates, then record the action result.
             if payment.status == "FAILED":
                 payment.transition_to("RETRYING")
+
+            if outcome.razorpay_payment_link_id and outcome.short_url:
+                existing_link = db.scalars(
+                    select(PaymentLink).where(
+                        PaymentLink.recovery_case_id == case.id,
+                        PaymentLink.status.in_(ACTIVE_PAYMENT_LINK_STATUSES),
+                    )
+                ).first()
+                if existing_link is None:
+                    link = PaymentLink(
+                        recovery_case_id=case.id,
+                        razorpay_payment_link_id=outcome.razorpay_payment_link_id,
+                        razorpay_short_url=outcome.short_url,
+                        amount=payment.amount,
+                        currency=payment.currency,
+                        status="CREATED",
+                        expires_at=outcome.expires_at,
+                    )
+                    db.add(link)
+                    db.flush()
+                    logger.info(
+                        "Persisted retry payment_link_id=%s for recovery_case_id=%s "
+                        "(short_url=%s)",
+                        link.id,
+                        case.id,
+                        outcome.short_url,
+                    )
+
+            recovery_service.record_action_result(
+                db,
+                action,
+                succeeded=True,
+                detail=outcome.detail,
+                awaiting_webhook=True,
+            )
             db.commit()
             return "awaiting_webhook"
 

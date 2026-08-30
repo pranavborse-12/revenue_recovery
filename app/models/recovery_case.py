@@ -6,6 +6,11 @@ recovery. A partial unique index (see the migration) enforces that a
 payment can have at most one NON-terminal recovery case at a time --
 this is the DB-level guardrail against duplicate webhook delivery
 creating two competing recovery tracks for the same failure.
+
+Phase 3 change: added AWAITING_CUSTOMER, a non-terminal status entered
+when automatic RETRY_PAYMENT attempts are exhausted (see
+recovery_service._route_exhausted_case). All other statuses and
+transitions are unchanged from Phase 2.
 """
 
 from datetime import datetime, timezone
@@ -15,20 +20,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
 
-# OPEN         -> just created, no strategy/action yet
-# IN_PROGRESS  -> a recovery action has been scheduled/executed at least once
-# RECOVERED    -> the payment eventually succeeded (terminal)
-# EXHAUSTED    -> max attempts reached without success (terminal)
-# CANCELLED    -> manually cancelled (terminal)
+# OPEN              -> just created, no strategy/action yet
+# IN_PROGRESS        -> a recovery action has been scheduled/executed at least once
+# AWAITING_CUSTOMER  -> automatic recovery exhausted; a payment link/email
+#                       is (or will be) generated for the customer (Phase 3)
+# RECOVERED          -> the payment eventually succeeded (terminal)
+# EXHAUSTED           -> max attempts reached without success, no customer
+#                       path applies to this strategy (terminal)
+# CANCELLED           -> manually cancelled (terminal)
 VALID_RECOVERY_CASE_TRANSITIONS: dict[str, set[str]] = {
     "OPEN": {"IN_PROGRESS", "CANCELLED"},
-    "IN_PROGRESS": {"RECOVERED", "EXHAUSTED", "IN_PROGRESS", "CANCELLED"},
+    "IN_PROGRESS": {"RECOVERED", "EXHAUSTED", "AWAITING_CUSTOMER", "IN_PROGRESS", "CANCELLED"},
+    "AWAITING_CUSTOMER": {"RECOVERED", "EXHAUSTED", "CANCELLED"},
     "RECOVERED": set(),
     "EXHAUSTED": set(),
     "CANCELLED": set(),
 }
 
 TERMINAL_RECOVERY_CASE_STATUSES = {"RECOVERED", "EXHAUSTED", "CANCELLED"}
+
+# Statuses that represent an unresolved case still being worked --
+# used by the API/stats layer. AWAITING_CUSTOMER counts as active: the
+# revenue is still at risk, just via a different recovery path.
+ACTIVE_RECOVERY_CASE_STATUSES = {"OPEN", "IN_PROGRESS", "AWAITING_CUSTOMER"}
 
 
 class InvalidRecoveryCaseTransition(Exception):
@@ -58,7 +72,7 @@ class RecoveryCase(Base):
     failure_category: Mapped[str] = mapped_column(String(32), nullable=False)
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
 
     # The strategy currently selected for this case, e.g. "RETRY_PAYMENT".
     # Nullable because a freshly-OPENed case may not have one chosen yet.

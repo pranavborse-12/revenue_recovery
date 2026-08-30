@@ -1,4 +1,4 @@
-"""Response schemas for the recovery API (app/api/routes/recovery.py)."""
+"""Response schemas for the recovery API. Phase 3 additions at the bottom."""
 
 from datetime import datetime
 
@@ -32,11 +32,44 @@ class RecoveryCaseOut(BaseModel):
     resolved_at: datetime | None
 
 
+# --- Phase 3 additions ---
+
+class PaymentLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    razorpay_short_url: str
+    status: str
+    amount: int
+    currency: str
+    created_at: datetime
+    expires_at: datetime | None
+
+
+class RecoveryCommunicationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    channel: str
+    type: str
+    status: str
+    sent_at: datetime | None
+    created_at: datetime
+
+
+class CustomerRecoveryTriggerResponse(BaseModel):
+    recovery_case_id: int
+    status: str
+    detail: str
+
+
 class RecoveryCaseDetailOut(RecoveryCaseOut):
     actions: list[RecoveryActionOut]
     razorpay_payment_id: str
     razorpay_order_id: str | None
     currency: str
+    payment_link: PaymentLinkOut | None = None
+    communications: list[RecoveryCommunicationOut] = []
 
 
 class RecoveryStatsOut(BaseModel):
@@ -46,7 +79,8 @@ class RecoveryStatsOut(BaseModel):
     active_recovery_cases: int
     recovered_cases: int
     exhausted_cases: int
-    recovery_rate: float  # recovered / (recovered + exhausted), 0.0 if no resolved cases yet
+    awaiting_customer_cases: int
+    recovery_rate: float
     currency_note: str = "Amounts are in the smallest currency unit (e.g. paise for INR)."
 
 

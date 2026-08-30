@@ -117,6 +117,27 @@ class TestRecordActionResult:
         assert case.status == "RECOVERED"
         assert decision.recovery_action.status == "SUCCESS"
 
+    def test_awaiting_webhook_marks_action_success_without_recovering_case(
+        self, db_session, stub_celery_dispatch
+    ):
+        payment = _make_failed_payment(db_session)
+        decision = recovery_service.on_payment_failed(db_session, payment)
+        db_session.commit()
+
+        case = recovery_service.record_action_result(
+            db_session,
+            decision.recovery_action,
+            succeeded=True,
+            detail="payment link created: https://rzp.io/i/example",
+            awaiting_webhook=True,
+        )
+        db_session.commit()
+
+        assert case.status == "IN_PROGRESS"
+        assert decision.recovery_action.status == "SUCCESS"
+        assert decision.recovery_action.executed_at is not None
+        assert decision.recovery_action.result == "payment link created: https://rzp.io/i/example"
+
     def test_failure_with_attempts_remaining_schedules_next_action(
         self, db_session, stub_celery_dispatch
     ):
