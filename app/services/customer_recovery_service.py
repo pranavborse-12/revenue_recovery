@@ -25,13 +25,16 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
+
 from app.models.payment import Payment
 from app.models.payment_link import ACTIVE_PAYMENT_LINK_STATUSES, PaymentLink
 from app.models.recovery_case import RecoveryCase
 from app.models.recovery_communication import ACTIVE_COMMUNICATION_STATUSES, RecoveryCommunication
 from app.services.email_provider import EmailProvider, EmailSendError
 from app.services.payment_gateway import PaymentGateway
+
 
 logger = get_logger(__name__)
 
@@ -146,6 +149,25 @@ def _build_recovery_email(payment: Payment, payment_link: PaymentLink) -> tuple[
     )
     return subject, body
 
+def _resolve_recovery_email(payment: Payment) -> str | None:
+    """
+    Resolve the email address used for outbound recovery delivery.
+
+    Razorpay Test Mode may provide the synthetic `void@razorpay.com`
+    address on failed payments. When a test override is configured,
+    use it only for the outbound recovery email.
+
+    The original payment.customer_email value is left unchanged.
+    """
+    settings = get_settings()
+
+    if (
+        payment.customer_email == "void@razorpay.com"
+        and settings.TEST_RECOVERY_EMAIL_OVERRIDE
+    ):
+        return settings.TEST_RECOVERY_EMAIL_OVERRIDE
+
+    return payment.customer_email
 
 def send_recovery_email(
     db: Session,
@@ -179,7 +201,8 @@ def send_recovery_email(
         )
         return EmailSendResult(communication=existing, is_new=False, sent=existing.status == "SENT")
 
-    if not payment.customer_email:
+    recipient = _resolve_recovery_email(payment)
+    if not recipient:
         raise NoCustomerEmailError(case.id)
 
     communication = RecoveryCommunication(
@@ -191,7 +214,8 @@ def send_recovery_email(
     subject, body = _build_recovery_email(payment, payment_link)
 
     try:
-        provider_message_id = email_provider.send(to=payment.customer_email, subject=subject, body=body)
+        provider_message_id = email_provider.send(
+            to=recipient, subject=subject, body=body)
     except EmailSendError as exc:
         communication.status = "FAILED"
         logger.warning(

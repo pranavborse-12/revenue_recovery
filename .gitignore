@@ -50,3 +50,6 @@ output.txt
 alembic.ini
 README.md
 alembic
+
+uv 
+uv.lock

@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_USE_TLS: bool = True
 
+    TEST_RECOVERY_EMAIL_OVERRIDE: str | None = None
+    
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
 
