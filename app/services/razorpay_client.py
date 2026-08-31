@@ -46,6 +46,10 @@ class WebhookSignatureError(Exception):
     """Raised when a webhook's signature does not match the expected value."""
 
 
+class CheckoutSignatureError(Exception):
+    """Raised when Standard Checkout's browser response fails verification."""
+
+
 def verify_webhook_signature(
     raw_body: bytes,
     received_signature: str,
@@ -78,6 +82,23 @@ def verify_webhook_signature(
         )
     except SignatureVerificationError as exc:
         raise WebhookSignatureError(str(exc)) from exc
+
+
+def verify_checkout_payment_signature(
+    *, order_id: str, payment_id: str, signature: str, key_secret: str
+) -> None:
+    """Verify the Standard Checkout response using Razorpay's official SDK utility."""
+    client = razorpay.Client(auth=("", key_secret))
+    try:
+        client.utility.verify_payment_signature(
+            {
+                "razorpay_order_id": order_id,
+                "razorpay_payment_id": payment_id,
+                "razorpay_signature": signature,
+            }
+        )
+    except SignatureVerificationError as exc:
+        raise CheckoutSignatureError(str(exc)) from exc
 
 
 def _manual_hmac_sha256(raw_body: bytes, webhook_secret: str) -> str:

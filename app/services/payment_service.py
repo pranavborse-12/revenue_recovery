@@ -60,6 +60,20 @@ def upsert_payment_from_event(
         select(Payment).where(Payment.razorpay_payment_id == entity.id)
     ).first()
 
+    # Standard Checkout creates a server-side PENDING row before Razorpay
+    # has minted a pay_* id. Match that placeholder by order so the webhook
+    # updates the same Payment row rather than creating a parallel state path.
+    if existing is None and entity.order_id:
+        existing = db.scalars(
+            select(Payment).where(
+                Payment.razorpay_order_id == entity.order_id,
+                Payment.status == "PENDING",
+                Payment.razorpay_payment_id.startswith("checkout_"),
+            )
+        ).first()
+        if existing is not None:
+            existing.razorpay_payment_id = entity.id
+
     is_new = existing is None
     payment = existing or Payment(
         razorpay_payment_id=entity.id,

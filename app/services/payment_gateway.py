@@ -57,7 +57,21 @@ class PaymentLinkMatchResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class CheckoutOrderResult:
+    status: str  # "created" | "failed"
+    detail: str
+    razorpay_order_id: str | None = None
+    amount: int | None = None
+    currency: str | None = None
+    created_at: datetime | None = None
+
+
 class PaymentGateway(Protocol):
+    def create_checkout_order(
+        self, *, amount: int, currency: str, receipt: str
+    ) -> CheckoutOrderResult: ...
+
     def retry_payment(
         self,
         *,
@@ -109,6 +123,19 @@ class MockPaymentGateway:
         # check_payment_link_paid should report as matched.
         self.paid_links = dict(paid_links) if paid_links else {}
         self.force_error = set(force_error) if force_error else set()
+
+    def create_checkout_order(
+        self, *, amount: int, currency: str, receipt: str
+    ) -> CheckoutOrderResult:
+        self._call_count += 1
+        return CheckoutOrderResult(
+            status="created",
+            detail="[mock gateway] checkout order created",
+            razorpay_order_id=f"order_MOCK{self._call_count:06d}",
+            amount=amount,
+            currency=currency,
+            created_at=datetime.now(timezone.utc),
+        )
 
     def retry_payment(
         self,
@@ -198,6 +225,31 @@ class RazorpayPaymentGateway:
                 "RazorpayPaymentGateway requires a Razorpay TEST MODE key "
                 "(RAZORPAY_KEY_ID must start with 'rzp_test_')."
             )
+
+    def create_checkout_order(
+        self, *, amount: int, currency: str, receipt: str
+    ) -> CheckoutOrderResult:
+        try:
+            order = self._client.order.create(
+                {"amount": amount, "currency": currency, "receipt": receipt}
+            )
+        except Exception as exc:  # Razorpay SDK raises provider-specific errors
+            logger.warning("Failed to create Razorpay Checkout order: %s", exc)
+            return CheckoutOrderResult(status="failed", detail=f"order creation failed: {exc}")
+
+        created_at = order.get("created_at")
+        return CheckoutOrderResult(
+            status="created",
+            detail="checkout order created",
+            razorpay_order_id=order.get("id"),
+            amount=order.get("amount"),
+            currency=order.get("currency"),
+            created_at=(
+                datetime.fromtimestamp(created_at, tz=timezone.utc)
+                if created_at is not None
+                else datetime.now(timezone.utc)
+            ),
+        )
 
     def _call_create_payment_link(
         self,
