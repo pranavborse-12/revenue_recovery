@@ -3,6 +3,9 @@ name = "revenue-recovery-agent"
 version = "0.1.0"
 description = "AI-powered revenue recovery platform -- Phase 1: Razorpay webhook ingestion foundation"
 requires-python = ">=3.11"
+dependencies = [
+    "mistralai>=2.9.4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,6 +1,9 @@
 """
 Application configuration.
 
+Phase 3 change: added EMAIL_* / SMTP_* settings for the recovery email
+provider (app/services/email_provider.py). Everything else is unchanged
+from Phase 2.
 """
 
 from functools import lru_cache
@@ -48,11 +51,25 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_USE_TLS: bool = True
+    # Razorpay Test Mode can use void@razorpay.com for failed payments.
+    # Set this only in local/test environments to redirect recovery emails
+    # to an inbox you control.
+    TEST_RECOVERY_EMAIL_OVERRIDE: str = ""
 
-    TEST_RECOVERY_EMAIL_OVERRIDE: str | None = None
-    
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
+
+    # --- AI recovery recommendations (Phase 4) ---
+    # AI_ENABLED: compute+store recommendations (audit-only, changes no
+    # behavior). AI_AGENT_ENABLED: a SEPARATE, stricter opt-in -- when
+    # true, a validated+accepted recommendation actually executes via
+    # the existing Phase 2/3 services (see recovery_agent.py). Defaults
+    # false independently of AI_ENABLED so audit-only mode never implies
+    # live execution.
+    AI_ENABLED: bool = False
+    AI_AGENT_ENABLED: bool = False
+    AI_API_KEY: str = ""
+    AI_MODEL: str = "mistral-small-latest"
 
     @property
     def is_production(self) -> bool:

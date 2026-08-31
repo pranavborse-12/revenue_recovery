@@ -63,6 +63,23 @@ class CustomerRecoveryTriggerResponse(BaseModel):
     detail: str
 
 
+class BatchResultOut(BaseModel):
+    cases_processed: int
+    revenue_at_risk: int
+    recovered_revenue: int
+    revenue_recovery_rate: float
+    recovered_cases: int
+    escalated_cases: int
+    stopped_cases: int
+    retries_executed: int
+    payment_links_created: int
+    emails_sent: int
+    ai_decisions: int
+    ai_decisions_executed: int
+    ai_policy_rejections: int
+    currency_note: str = "Amounts are in the smallest currency unit (e.g. paise for INR)."
+
+
 class RecoveryCaseDetailOut(RecoveryCaseOut):
     actions: list[RecoveryActionOut]
     razorpay_payment_id: str

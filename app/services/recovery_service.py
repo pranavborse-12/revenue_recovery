@@ -17,7 +17,12 @@ AWAITING_CUSTOMER and kicks off customer-assisted recovery instead. Every
 other strategy (MANUAL_REVIEW, REQUEST_PAYMENT_METHOD_UPDATE) still goes
 straight to EXHAUSTED, unchanged from Phase 2 -- those were never
 auto-executed, so there is no "automatic recovery exhausted" event for
-them to react to.
+Phase 4 addition: both decision points below (mid-loop failure, and
+exhaustion) now call _try_live_agent() first. When AI_AGENT_ENABLED and
+budgeted, a validated recommendation can execute via the existing
+tools (agent_tools.py) instead of the deterministic default for that
+round -- see recovery_agent.py. Disabled by default; behavior is
+byte-identical to before when AI_AGENT_ENABLED=False.
 """
 
 from dataclasses import dataclass
@@ -192,20 +197,26 @@ def record_action_result(
         return case
 
     logger.info(
-        "recovery_case_id=%s action_id=%s failed (%s); scheduling next attempt",
-        case.id, action.id, detail,
+        "recovery_case_id=%s action_id=%s failed (%s)", case.id, action.id, detail,
     )
+    if _try_live_agent(db, case, recovery_action_id=action.id):
+        return case
+    logger.info("recovery_case_id=%s scheduling next attempt (deterministic default)", case.id)
     _schedule_next_action(db, case, case.current_strategy or "MANUAL_REVIEW")
     return case
 
 
 def _route_exhausted_case(db: Session, case: RecoveryCase) -> None:
     """
-    Phase 3: a case whose automatic recovery is exhausted goes to
-    AWAITING_CUSTOMER (and customer-assisted recovery is enqueued) if its
-    strategy is one Phase 3 handles; otherwise it goes straight to
-    EXHAUSTED, exactly as in Phase 2.
+    A case whose automatic recovery is exhausted. The live agent (if
+    enabled and within budget) gets first refusal on what happens next;
+    only if it doesn't handle this round does the deterministic Phase 3
+    default run: AWAITING_CUSTOMER for RETRY_PAYMENT-strategy cases,
+    EXHAUSTED for everything else, exactly as before this file changed.
     """
+    if _try_live_agent(db, case, recovery_action_id=None):
+        return
+
     if case.current_strategy in STRATEGIES_ELIGIBLE_FOR_CUSTOMER_RECOVERY:
         case.transition_to("AWAITING_CUSTOMER")
         logger.info(
@@ -370,3 +381,74 @@ def resolve_via_payment_link(db: Session, captured_payment: Payment, gateway) ->
         captured_payment.id, len(candidates),
     )
     return PaymentLinkResolution(status="not_matched")
+
+
+# --- AI recovery recommendations (Phase 4, audit-only) ---
+#
+# Fire-and-forget at both decision points where the deterministic system
+# already chooses "what next": after scheduling another retry, and at
+# exhaustion routing. The enqueued task computes context, asks the AI
+# service, validates the result, and stores it -- it never mutates
+# RecoveryCase/RecoveryAction/PaymentLink, so a bug or failure here
+# cannot affect the deterministic path above it, which has already
+# returned by the time this is called.
+
+def _try_live_agent(db: Session, case: RecoveryCase, *, recovery_action_id: int | None) -> bool:
+    """
+    Single entry point both decision hooks use.
+
+    If the live agent (AI_AGENT_ENABLED) has budget, run it synchronously
+    and return whether it handled this round. Otherwise fall back to the
+    audit-only async path (AI_ENABLED alone -- compute+store a
+    recommendation, fire-and-forget, never execute) exactly as before
+    this change -- AI_AGENT_ENABLED is a strictly additive, separate
+    opt-in, never a silent replacement for audit-only mode.
+    """
+    from app.services import recovery_agent
+
+    if recovery_agent.agent_has_budget(db, case):
+        result = recovery_agent.try_agent_intervention(db, case, recovery_action_id=recovery_action_id)
+        return result.handled
+
+    _enqueue_ai_recommendation(case.id, recovery_action_id)
+    return False
+
+
+def _enqueue_ai_recommendation(recovery_case_id: int, recovery_action_id: int | None) -> None:
+    from app.core.config import get_settings
+
+    if not get_settings().AI_ENABLED:
+        return  # cheap early exit, no Celery round-trip when AI is off
+
+    from app.tasks.ai_recovery_tasks import request_ai_recommendation
+
+    request_ai_recommendation.apply_async(args=[recovery_case_id, recovery_action_id], countdown=0)
+
+
+def validate_ai_recommendation(
+    case: RecoveryCase, recommendation
+) -> tuple[bool, str | None]:
+    """
+    Deterministic policy check: would this (already schema-valid)
+    recommendation be safe to act on? Returns (accepted, rejection_reason).
+
+    Audit-only today -- nothing currently branches on the True/False this
+    returns -- but it's a real, independently testable function so that
+    wiring it into live execution later is a one-line change, not new
+    logic. Keeps AI confidence from ever being treated as authority on
+    its own, per the project's core constraint.
+    """
+    if case.status in TERMINAL_RECOVERY_CASE_STATUSES:
+        return False, f"case is already {case.status} (terminal)"
+
+    if recommendation.action == "RETRY_PAYMENT":
+        policy = get_retry_policy()
+        if policy.is_exhausted(case.attempt_count):
+            return False, "max automatic attempts already reached"
+        if recommendation.delay_minutes is None:
+            return False, "RETRY_PAYMENT requires delay_minutes"
+
+    if recommendation.action == "SEND_PAYMENT_LINK" and case.current_strategy not in STRATEGIES_ELIGIBLE_FOR_CUSTOMER_RECOVERY:
+        return False, f"strategy {case.current_strategy} has no customer-recovery path"
+
+    return True, None

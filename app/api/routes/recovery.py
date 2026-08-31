@@ -36,6 +36,7 @@ from app.models.recovery_case import ACTIVE_RECOVERY_CASE_STATUSES, RecoveryCase
 from app.models.recovery_communication import RecoveryCommunication
 from app.schemas.recovery import (
     CustomerRecoveryTriggerResponse,
+    BatchResultOut,
     RecoveryCaseDetailOut,
     RecoveryCaseOut,
     RecoveryStatsOut,
@@ -242,3 +243,17 @@ def trigger_customer_recovery_now(case_id: int, db: Session = Depends(get_db)) -
         status="triggered",
         detail="Customer recovery (payment link + email) enqueued for immediate execution",
     )
+
+
+@router.get("/batch", response_model=BatchResultOut)
+def get_batch_result(db: Session = Depends(get_db)) -> BatchResultOut:
+    """
+    Read-only report over every RecoveryCase and AIRecoveryDecision that
+    already exists -- NOT a trigger to run/simulate anything. Per the
+    project brief, batch measurement should reflect real executed
+    outcomes, not a second execution path.
+    """
+    from app.services.batch_recovery import run_batch
+
+    result = run_batch(db)
+    return BatchResultOut(**result.__dict__)

@@ -1,16 +1,8 @@
 """
 Celery application instance.
 
-A single worker, a single queue (Celery's default) -- per the project
-brief, we don't introduce multiple worker services or a broker beyond
-Redis. FastAPI enqueues tasks (via recovery_service._enqueue_action);
-`celery -A app.tasks.celery_app worker` runs them.
-
-We use `eta=` (see recovery_tasks.py's apply_async call) rather than
-Celery Beat for scheduling -- Beat is for *recurring* schedules (cron-
-like); what we need is "run this one task at this one future time",
-which `apply_async(eta=...)` handles natively without needing a second
-scheduler process.
+Phase 3 change: added app.tasks.customer_recovery_tasks to `include` so
+its task is registered. Everything else is unchanged from Phase 2.
 """
 
 from celery import Celery
@@ -23,7 +15,7 @@ celery_app = Celery(
     "revenue_recovery",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.recovery_tasks", "app.tasks.customer_recovery_tasks"],
+    include=["app.tasks.recovery_tasks", "app.tasks.customer_recovery_tasks", "app.tasks.ai_recovery_tasks"],
 )
 
 celery_app.conf.update(
