@@ -185,6 +185,6 @@ class TestRecordActionResult:
             )
             current_action = pending
 
-        assert case.status == "EXHAUSTED"
-        assert case.resolved_at is not None
+        assert case.status == "AWAITING_CUSTOMER"
+        assert case.resolved_at is None
         assert case.attempt_count == 3

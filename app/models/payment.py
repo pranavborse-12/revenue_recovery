@@ -11,35 +11,29 @@ One Payment row per Razorpay payment_id. Updated in place as new events
 arrive for that payment_id (e.g. payment.failed, then later a separate
 payment_id for a retry that succeeds -- see `retried_from_payment_id`
 for how we link those).
+
+is_synthetic (this change): marks rows inserted directly by
+scripts/seed_synthetic_history.py for historical-intelligence bootstrap
+data, never created via the real webhook/payment_service path. Every
+synthetic row is inserted already in a terminal Payment/RecoveryCase/
+RecoveryAction state, so no live Celery task or webhook handler ever
+picks one up -- is_synthetic is a clear label for humans/queries, not
+itself the safety mechanism (the terminal-state-only seeding is).
 """
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
 
-# Valid payment statuses and the transitions we allow between them.
-# Kept intentionally small -- only what Phase 1's two event types
-# (payment.captured, payment.failed) can actually produce.
-#
-#   PENDING -> SUCCESS
-#   PENDING -> FAILED
-#   FAILED  -> RETRYING   (a recovery action was scheduled)
-#   RETRYING -> SUCCESS   (a retry payment was captured)
-#   RETRYING -> FAILED    (a retry payment also failed)
-#
-# CANCELLED exists for completeness (a recovery case can be cancelled,
-# which cancels the payment's recovery track) but nothing in Phase 2
-# transitions a payment INTO cancelled automatically -- it's set
-# explicitly by recovery_service when a case is cancelled.
 VALID_PAYMENT_TRANSITIONS: dict[str, set[str]] = {
     "PENDING": {"SUCCESS", "FAILED"},
     "FAILED": {"RETRYING", "CANCELLED"},
     "RETRYING": {"SUCCESS", "FAILED"},
-    "SUCCESS": set(),  # terminal
-    "CANCELLED": set(),  # terminal
+    "SUCCESS": set(),
+    "CANCELLED": set(),
 }
 
 
@@ -65,42 +59,30 @@ class Payment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
-    # Razorpay identifiers. razorpay_payment_id is unique -- one Payment
-    # row per Razorpay payment attempt.
     razorpay_payment_id: Mapped[str] = mapped_column(
         String(64), nullable=False, unique=True, index=True
     )
     razorpay_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    # Customer identity where available. Razorpay's payment webhook
-    # payload doesn't reliably include a customer_id (see schemas/webhook.py
-    # for the same note in Phase 1) -- we store email/contact as the best
-    # available identity signal, not a foreign key to a Customer table we
-    # don't have real requirements for yet.
     customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     customer_contact: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    amount: Mapped[int] = mapped_column(Integer, nullable=False)  # smallest currency unit
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
 
-    # Failure details, populated only when status is FAILED or RETRYING
-    # (i.e. the payment has failed at least once).
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    # Retry-chain linkage: if this payment is itself a retry attempt that
-    # succeeded after a prior payment on the SAME order failed, this
-    # points at that prior Payment row. Populated by payment_service when
-    # a payment.captured event arrives for an order that has a prior
-    # FAILED/RETRYING payment. Nullable self-reference, not a hard FK
-    # requirement -- most payments are not retries.
     retried_from_payment_id: Mapped[int | None] = mapped_column(
         ForeignKey("payments.id", ondelete="SET NULL"), nullable=True
     )
+
+    # Phase 4 addition: see module docstring.
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     razorpay_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -111,14 +93,6 @@ class Payment(Base):
     )
 
     def transition_to(self, new_status: str) -> None:
-        """
-        Move this payment to new_status, enforcing VALID_PAYMENT_TRANSITIONS.
-
-        Raises InvalidPaymentTransition if the move isn't allowed. This is
-        the single choke point for status changes -- callers should never
-        assign `payment.status = ...` directly, so an invalid transition
-        can't accidentally corrupt state.
-        """
         allowed = VALID_PAYMENT_TRANSITIONS.get(self.status, set())
         if new_status not in allowed:
             raise InvalidPaymentTransition(self.status, new_status)

@@ -5,17 +5,24 @@ Celery task: request_ai_recommendation.
           |
     this task
           |
-    recovery_context.build_recovery_context()
-          |
-    ai_recovery_service.recommend()  -- None on ANY failure
+    recovery_agent.get_multi_agent_recommendation()
+          |  (3 independent agent opinions, each recorded;
+          |   reconciled deterministically)
           |
     recovery_service.validate_ai_recommendation()  -- policy check
           |
-    AIRecoveryDecision row stored
+    final AIRecoveryDecision row stored (executed=False, always)
 
 Audit-only: this task never writes to RecoveryCase, RecoveryAction, or
-PaymentLink. Its only side effect is inserting one row into
-ai_recovery_decisions. A bug here cannot corrupt recovery state.
+PaymentLink -- get_multi_agent_recommendation's per-agent audit writes
+and this task's own final-row write are its only side effects. A bug
+here cannot corrupt recovery state.
+
+Multi-agent change: was previously a single Mistral call via
+ai_recovery_service.get_ai_recovery_service().recommend(); now uses the
+same 3-agent orchestrator the live agent path uses (recovery_agent.py),
+so audit-only mode shows what the full multi-agent system would have
+done, not just the old single-provider baseline.
 
 Celery-level retries are enabled (unlike execute_recovery_action) because
 a failure here is purely infrastructural (AI provider hiccup) -- there's
@@ -27,8 +34,7 @@ from app.core.logging import configure_logging, get_logger
 from app.db.session import SessionLocal
 from app.models.ai_recovery_decision import AIRecoveryDecision
 from app.models.recovery_case import RecoveryCase
-from app.services import recovery_context, recovery_service
-from app.services.ai_recovery_service import get_ai_recovery_service
+from app.services import recovery_agent, recovery_service
 from app.tasks.celery_app import celery_app
 
 configure_logging()
@@ -49,14 +55,12 @@ def request_ai_recommendation(self, recovery_case_id: int, recovery_action_id: i
             logger.warning("request_ai_recommendation: recovery_case_id=%s not found", recovery_case_id)
             return "skipped: not found"
 
-        service = get_ai_recovery_service()
-        if service is None:
-            return "skipped: AI disabled or unconfigured"
-
-        context = recovery_context.build_recovery_context(db, case)
-        recommendation = service.recommend(context)
+        recommendation = recovery_agent.get_multi_agent_recommendation(
+            db, case, recovery_action_id=recovery_action_id
+        )
         if recommendation is None:
-            logger.info("recovery_case_id=%s: no usable AI recommendation", case.id)
+            db.commit()  # persist the per-agent opinion rows even when reconciliation found nothing confident
+            logger.info("recovery_case_id=%s: no usable multi-agent recommendation", case.id)
             return "skipped: no valid recommendation"
 
         accepted, rejection_reason = recovery_service.validate_ai_recommendation(case, recommendation)
@@ -69,9 +73,12 @@ def request_ai_recommendation(self, recovery_case_id: int, recovery_action_id: i
                 recommended_delay_minutes=recommendation.delay_minutes,
                 confidence=recommendation.confidence,
                 reason=recommendation.reason,
-                model=service._model,
+                model="multi-agent",
+                agent_role="final",
+                provider=None,
                 accepted=accepted,
                 rejection_reason=rejection_reason,
+                executed=False,  # audit-only task: NEVER executes, regardless of accepted
             )
         )
         db.commit()

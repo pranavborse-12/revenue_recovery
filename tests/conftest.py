@@ -38,6 +38,44 @@ from app.services.razorpay_client import _manual_hmac_sha256
 TEST_WEBHOOK_SECRET = "dummy_webhook_secret_for_tests"
 
 
+@pytest.fixture(autouse=True)
+def offline_settings(monkeypatch):
+    """Keep tests deterministic even when a developer's .env enables live features."""
+    monkeypatch.setenv("AI_ENABLED", "false")
+    monkeypatch.setenv("AI_AGENT_ENABLED", "false")
+    monkeypatch.setenv("RETRY_DELAY_MINUTES", "[30,360,1440]")
+    monkeypatch.setenv("EMAIL_PROVIDER", "console")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+class FakeEnqueuedAction:
+    """Records Celery dispatches without requiring a Redis broker in tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.immediate_calls: list[int] = []
+
+    def __call__(self, action, *, immediate: bool = False) -> None:
+        self.calls.append(action.id)
+        if immediate:
+            self.immediate_calls.append(action.id)
+
+
+@pytest.fixture(autouse=True)
+def stub_celery_dispatch(monkeypatch):
+    from app.services import recovery_service
+
+    fake = FakeEnqueuedAction()
+    monkeypatch.setattr(recovery_service, "_enqueue_action", fake)
+    return fake
+
+@pytest.fixture(autouse=True)
+def stub_customer_recovery_dispatch(monkeypatch):
+    from app.services import recovery_service
+    monkeypatch.setattr(recovery_service, "_enqueue_customer_recovery", lambda *a, **k: None)
+
 @pytest.fixture()
 def db_engine():
     """

@@ -51,11 +51,7 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_USE_TLS: bool = True
-    # Razorpay Test Mode can use void@razorpay.com for failed payments.
-    # Set this only in local/test environments to redirect recovery emails
-    # to an inbox you control.
-    TEST_RECOVERY_EMAIL_OVERRIDE: str = ""
-
+    TEST_RECOVERY_EMAIL_OVERRIDE: str = "" 
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
 
@@ -68,13 +64,28 @@ class Settings(BaseSettings):
     # live execution.
     AI_ENABLED: bool = False
     AI_AGENT_ENABLED: bool = False
+    # Mistral (unchanged from single-provider Phase 4 -- these two names
+    # are kept as-is rather than renamed to AI_MISTRAL_*, so nothing
+    # already reading them needs to change).
     AI_API_KEY: str = ""
     AI_MODEL: str = "mistral-small-latest"
+
+    # Multi-agent (this change): Groq serves both non-Mistral agents.
+    # Model IDs verified current on Groq as of this change -- see
+    # ai_recovery_service.py's module docstring for the verification
+    # notes, including the one open question (Groq's Qwen offering is
+    # documented as preview-tier, not production).
+    GROQ_API_KEY: str = ""
+    AI_STRATEGIST_PROVIDER: str = "mistral"
+    AI_HISTORICAL_PROVIDER: str = "groq"
+    AI_HISTORICAL_MODEL: str = "qwen/qwen3.6-27b"
+    AI_CRITIC_PROVIDER: str = "groq"
+    AI_CRITIC_MODEL: str = "openai/gpt-oss-120b"
 
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
-
+    
 
 @lru_cache
 def get_settings() -> Settings:

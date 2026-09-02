@@ -20,17 +20,6 @@ from app.services import agent_tools, batch_recovery, recovery_agent
 from app.services.payment_gateway import MockPaymentGateway
 
 
-class FakeAIService:
-    """Returns a preset queue of recommendations, one per call."""
-
-    def __init__(self, recommendations):
-        self._queue = list(recommendations)
-        self._model = "fake-model"
-
-    def recommend(self, context):
-        return self._queue.pop(0) if self._queue else None
-
-
 class FakeEmailProvider:
     def send(self, *, to, subject, body):
         return "fake-id"
@@ -150,8 +139,8 @@ def test_tool_rejects_ineligible_case_status(db):
 def test_try_agent_intervention_falls_through_when_policy_rejects(db, monkeypatch):
     case, _ = _case_with_payment(db)
     case.attempt_count = 99  # forces validate_ai_recommendation to reject RETRY_PAYMENT
-    fake = FakeAIService([AIRecommendation(action="RETRY_PAYMENT", delay_minutes=60, confidence=0.9, reason="x")])
-    monkeypatch.setattr(recovery_agent, "get_ai_recovery_service", lambda: fake)
+    rec = AIRecommendation(action="RETRY_PAYMENT", delay_minutes=60, confidence=0.9, reason="x")
+    monkeypatch.setattr(recovery_agent, "get_multi_agent_recommendation", lambda *a, **k: rec)
 
     result = recovery_agent.try_agent_intervention(db, case, recovery_action_id=None)
 
@@ -163,8 +152,8 @@ def test_try_agent_intervention_falls_through_when_policy_rejects(db, monkeypatc
 
 def test_try_agent_intervention_wait_never_counts_as_handled(db, monkeypatch):
     case, _ = _case_with_payment(db)
-    fake = FakeAIService([AIRecommendation(action="WAIT", confidence=0.4, reason="not enough data")])
-    monkeypatch.setattr(recovery_agent, "get_ai_recovery_service", lambda: fake)
+    rec = AIRecommendation(action="WAIT", confidence=0.4, reason="not enough data")
+    monkeypatch.setattr(recovery_agent, "get_multi_agent_recommendation", lambda *a, **k: rec)
 
     result = recovery_agent.try_agent_intervention(db, case, recovery_action_id=None)
 
@@ -175,8 +164,8 @@ def test_try_agent_intervention_wait_never_counts_as_handled(db, monkeypatch):
 
 def test_try_agent_intervention_tool_failure_still_falls_through(db, monkeypatch):
     case, payment = _case_with_payment(db)
-    fake = FakeAIService([AIRecommendation(action="SEND_PAYMENT_LINK", confidence=0.8, reason="x")])
-    monkeypatch.setattr(recovery_agent, "get_ai_recovery_service", lambda: fake)
+    rec = AIRecommendation(action="SEND_PAYMENT_LINK", confidence=0.8, reason="x")
+    monkeypatch.setattr(recovery_agent, "get_multi_agent_recommendation", lambda *a, **k: rec)
 
     def _boom(*a, **k):
         raise agent_tools.AgentToolError("simulated Razorpay outage")
@@ -193,8 +182,8 @@ def test_try_agent_intervention_tool_failure_still_falls_through(db, monkeypatch
 
 def test_try_agent_intervention_manual_review_transitions_to_exhausted(db, monkeypatch):
     case, _ = _case_with_payment(db)
-    fake = FakeAIService([AIRecommendation(action="MANUAL_REVIEW", confidence=0.6, reason="ambiguous")])
-    monkeypatch.setattr(recovery_agent, "get_ai_recovery_service", lambda: fake)
+    rec = AIRecommendation(action="MANUAL_REVIEW", confidence=0.6, reason="ambiguous")
+    monkeypatch.setattr(recovery_agent, "get_multi_agent_recommendation", lambda *a, **k: rec)
 
     result = recovery_agent.try_agent_intervention(db, case, recovery_action_id=None)
 

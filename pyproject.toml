@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AI-powered revenue recovery platform -- Phase 1: Razorpay webhook ingestion foundation"
 requires-python = ">=3.11"
 dependencies = [
+    "groq>=1.7.0",
     "mistralai>=2.9.4",
 ]
 
