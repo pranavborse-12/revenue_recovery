@@ -96,6 +96,17 @@ def db_engine():
 
 
 @pytest.fixture()
+def db_session(db_engine):
+    """A raw session for service tests that do not need HTTP."""
+    TestingSessionLocal = sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture()
 def client(db_engine):
     """A TestClient with the `get_db` dependency overridden to use our
     per-test in-memory database instead of the real DATABASE_URL."""
