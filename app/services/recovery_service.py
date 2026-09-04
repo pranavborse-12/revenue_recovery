@@ -338,7 +338,18 @@ def resolve_via_payment_link(db: Session, captured_payment: Payment, gateway) ->
     candidates = list(
         db.scalars(
             select(PaymentLink)
-            .where(PaymentLink.status.in_(ACTIVE_PAYMENT_LINK_STATUSES))
+            .join(
+            RecoveryCase,
+            RecoveryCase.id == PaymentLink.recovery_case_id,
+            )
+            .join(
+            Payment,
+            Payment.id == RecoveryCase.payment_id,
+            )
+            .where(
+            PaymentLink.status.in_(ACTIVE_PAYMENT_LINK_STATUSES),
+            Payment.is_synthetic.is_(False),
+            )
             .order_by(PaymentLink.created_at)
             .limit(MAX_PAYMENT_LINK_CANDIDATES)
         )
