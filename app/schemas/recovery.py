@@ -17,6 +17,56 @@ class RecoveryActionOut(BaseModel):
     result: str | None
 
 
+class CustomerSummaryOut(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    customer_id: str | None = None
+    previous_recovery_history: str | None = None
+
+
+class PaymentSummaryOut(BaseModel):
+    payment_id: str
+    order_id: str | None = None
+    amount: int
+    currency: str
+    status: str
+    failure_category: str | None = None
+    failure_reason: str | None = None
+    failure_code: str | None = None
+    created_at: datetime | None = None
+
+
+class RecoveryDecisionOut(BaseModel):
+    recommended_action: str | None = None
+    current_strategy: str | None = None
+    attempt_number: int | None = None
+    accepted: bool | None = None
+    executed: bool | None = None
+    actual_action_executed: str | None = None
+    status: str | None = None
+    confidence: float | None = None
+
+
+class AIInsightOut(BaseModel):
+    model: str | None = None
+    recommended_action: str | None = None
+    recommendation: str | None = None
+    confidence: float | None = None
+    reason: str | None = None
+    supporting_evidence: str | None = None
+    decision_timestamp: datetime | None = None
+
+
+class HistoricalEvidenceOut(BaseModel):
+    similar_cases: int | None = None
+    successful_recoveries: int | None = None
+    historical_recovery_rate: float | None = None
+    best_strategy: str | None = None
+    best_strategy_recovery_rate: float | None = None
+    action_breakdown: dict[str, dict[str, float | int]] = {}
+
+
 class RecoveryCaseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -30,6 +80,11 @@ class RecoveryCaseOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
+    customer_email: str | None = None
+    customer_name: str | None = None
+    recovery_probability: float | None = None
+    ai_recommendation: str | None = None
+    ai_confidence: float | None = None
 
 
 # --- Phase 3 additions ---
@@ -87,6 +142,11 @@ class RecoveryCaseDetailOut(RecoveryCaseOut):
     currency: str
     payment_link: PaymentLinkOut | None = None
     communications: list[RecoveryCommunicationOut] = []
+    customer: CustomerSummaryOut = CustomerSummaryOut()
+    payment: PaymentSummaryOut | None = None
+    decision: RecoveryDecisionOut = RecoveryDecisionOut()
+    ai_insight: AIInsightOut = AIInsightOut()
+    historical_evidence: HistoricalEvidenceOut = HistoricalEvidenceOut()
 
 
 class RecoveryStatsOut(BaseModel):

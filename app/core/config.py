@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     APP_ENV: str = Field(default="development")  # development | test | production
     API_V1_PREFIX: str = "/api/v1"
 
+    # --- Firebase Admin authentication ---
+    # These credentials are backend-only. Never prefix them with NEXT_PUBLIC_.
+    FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_CLIENT_EMAIL: str = ""
+    FIREBASE_PRIVATE_KEY: str = ""
+
     # --- Razorpay ---
     RAZORPAY_KEY_ID: str
     RAZORPAY_KEY_SECRET: str

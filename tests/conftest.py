@@ -31,6 +31,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import get_settings
+from app.core.auth import get_current_user
 from app.db.session import Base, get_db
 from app.main import app
 from app.services.razorpay_client import _manual_hmac_sha256
@@ -120,6 +121,7 @@ def client(db_engine):
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "test-user"}
     get_settings.cache_clear()
     with TestClient(app) as test_client:
         yield test_client

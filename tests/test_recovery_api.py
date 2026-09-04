@@ -63,6 +63,48 @@ class TestGetRecoveryCaseDetail:
         assert len(body["actions"]) == 1
         assert body["actions"][0]["action_type"] == "RETRY_PAYMENT"
 
+    def test_returns_customer_and_ai_intelligence(self, client, db_engine):
+        _create_failed_payment_with_case(client, payment_id="pay_Intel001")
+
+        from sqlalchemy.orm import sessionmaker
+
+        from app.models.ai_recovery_decision import AIRecoveryDecision
+        from app.models.payment import Payment
+        from app.models.recovery_case import RecoveryCase
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as db:
+            case = db.query(RecoveryCase).one()
+            db.add(
+                AIRecoveryDecision(
+                    recovery_case_id=case.id,
+                    recommended_action="SEND_PAYMENT_LINK",
+                    recommended_delay_minutes=60,
+                    confidence=0.91,
+                    reason="Historical reuse of payment links recovered similar bank-declined payments.",
+                    model="mistral-small-latest",
+                    agent_role="final",
+                    provider="mistral",
+                    accepted=True,
+                    rejection_reason=None,
+                    executed=True,
+                    outcome="payment link created",
+                )
+            )
+            db.commit()
+
+        case_id = client.get(f"{RECOVERY_URL}/cases").json()[0]["id"]
+        response = client.get(f"{RECOVERY_URL}/cases/{case_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["customer"]["email"] == "test.customer@example.com"
+        assert body["recovery_probability"] == 0.91
+        assert body["ai_insight"]["recommended_action"] == "SEND_PAYMENT_LINK"
+        assert body["ai_insight"]["confidence"] == 0.91
+        assert body["ai_insight"]["model"] == "mistral-small-latest"
+        assert body["historical_evidence"] is not None
+
     def test_404_for_nonexistent_case(self, client):
         response = client.get(f"{RECOVERY_URL}/cases/999999")
         assert response.status_code == 404

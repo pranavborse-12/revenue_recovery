@@ -5,6 +5,7 @@ uvicorn[standard]==0.34.0
 # --- Configuration ---
 pydantic==2.10.4
 pydantic-settings==2.7.1
+firebase-admin==6.6.0
 
 # --- Database ---
 sqlalchemy==2.0.36
