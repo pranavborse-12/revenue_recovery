@@ -1,51 +1,90 @@
-# Revenue Recovery Agent
+# RevFlow
 
-**Phase 1: Razorpay Test Mode + Backend Foundation**
+RevFlow is an AI-assisted payment recovery platform for Razorpay merchants. It listens for payment webhooks, detects failed payments, opens recovery cases, and helps get that revenue back through retries, payment links, and customer emails — with an optional AI layer that recommends and can execute recovery actions.
 
-An AI-powered revenue recovery platform, built incrementally. Phase 1 establishes the
-foundation: receiving, validating, and safely storing Razorpay payment webhooks.
+## What RevFlow Does
 
-> This is Phase 1 of a multi-phase build. Later phases will add a decision engine, an
-> AI/LangGraph agent workflow, ML-based customer scoring, automated recovery actions, and
-> a React dashboard. None of that exists yet, on purpose — see [Roadmap](#roadmap).
+When a customer's payment fails, that revenue is usually just lost. RevFlow sits between your Razorpay account and your business logic to catch these failures automatically:
 
----
+- Receives `payment.failed` and `payment.captured` events from Razorpay
+- Classifies why a payment failed and opens a recovery case for it
+- Recommends and (optionally) executes a recovery action — retry, payment link, or email
+- Tracks each case until it's `RECOVERED`, `EXHAUSTED`, or `CANCELLED`
+- Gives merchants a dashboard to see recovery performance across their organization
 
-## Table of Contents
+It's a multi-tenant system — every merchant's data lives under their own `organization_id`, and users sign in with Google via Firebase.
 
-- [Project Overview](#project-overview)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Prerequisites](#prerequisites)
-- [Environment Variables](#environment-variables)
-- [Installation (Windows)](#installation-windows)
-- [Database Setup](#database-setup)
-- [Running Locally](#running-locally)
-- [Razorpay Test Mode Setup](#razorpay-test-mode-setup)
-- [Webhook Setup](#webhook-setup)
-- [Testing](#testing)
-- [Project Structure](#project-structure)
-- [Security Notes](#security-notes)
-- [What This Phase Teaches](#what-this-phase-teaches)
-- [Roadmap](#roadmap)
+## Main Features
 
----
+- Google sign-in via Firebase, with automatic workspace creation for first-time users
+- Signed and idempotent Razorpay webhook ingestion
+- Automatic recovery case creation for failed payments
+- Recovery actions: scheduled retries, Razorpay payment links, recovery emails
+- Optional AI recommendation layer (multi-agent) — **off by default**, controlled by feature flags
+- Background processing via Redis + Celery for anything that shouldn't block the request
+- Merchant dashboard with recovery stats, case lists, and case detail views
+- Tenant isolation on every recovery-related table
 
-## Project Overview
+## End-to-End Workflow
 
-The end goal of this project is a system that can answer:
+1. A customer's payment fails on Razorpay.
+2. Razorpay sends a `payment.failed` webhook to RevFlow.
+3. RevFlow verifies the signature, checks the event hasn't been processed before, and stores it.
+4. A payment record is created/updated and a recovery case is opened, classified by failure reason.
+5. If AI recommendations are enabled, the multi-agent workflow proposes an action with a confidence score.
+6. A recovery action is scheduled — a Celery worker executes the retry, generates a payment link, or sends an email.
+7. If the customer later succeeds (a `payment.captured` event correlated to the earlier failure), the case is marked `RECOVERED`.
+8. The merchant watches all of this happen in real time on the dashboard.
 
-> "A ₹85,000 payment failed. Why did it fail, how valuable is this customer, what is the
-> best recovery action, is that action allowed by policy, did the action recover the
-> money, and how much revenue has the system recovered?"
+## High-Level Architecture
 
-Phase 1 only builds the first link in that chain: **reliably receiving and recording
-Razorpay payment events.** Nothing here makes decisions, retries payments, or talks to
-an LLM — that's deliberate. A recovery engine is only as trustworthy as the event data
-feeding it, so this phase focuses entirely on getting that data pipeline correct,
-secure, and idempotent.
+RevFlow is a monorepo with two applications:
 
-## Architecture
+- **`frontend/`** — Next.js dashboard the merchant uses
+- **`revenue-recovery/`** — FastAPI backend that does the actual work
+
+The backend talks to PostgreSQL for storage, Firebase Admin SDK for auth verification, Redis/Celery for background jobs, and the Razorpay SDK for payments and payment links. AI recommendations, when enabled, run through a small multi-agent workflow before anything is stored as an `ai_recovery_decisions` row.
+
+## Architecture Diagram
+
+![RevFlow Architecture](./architecture-diagram.png)
+
+## Frontend Overview
+
+Located in `frontend/`. A Next.js + TypeScript app styled with Tailwind CSS, using Recharts for charts, Lucide for icons, and Motion for animation.
+
+Pages:
+- Landing page
+- Login (Firebase Google sign-in)
+- Dashboard overview
+- Recovery cases list and case detail
+- Analytics
+
+The frontend never talks to Razorpay or the database directly. It calls the backend through an API client that attaches the Firebase ID token on every request, and a Next.js rewrite forwards `/api/*` calls to the FastAPI backend so the browser only ever sees one origin.
+
+## Backend Overview
+
+Located in `revenue-recovery/`. A FastAPI app with all routes under `/api/v1`, using SQLAlchemy + PostgreSQL for storage, Alembic for migrations, the Firebase Admin SDK for token verification, the Razorpay SDK for payments and payment links, and Redis/Celery for background work. Interactive API docs are served at `/docs`.
+
+## Authentication and Authorization
+
+1. The user signs in with Google through Firebase Authentication on the frontend.
+2. The frontend gets back a Firebase ID token and sends it as a `Bearer` token on every API request.
+3. The backend verifies the token using the Firebase Admin SDK.
+4. The verified email is mapped to an application user. First-time users get a private workspace (organization) created automatically.
+5. Every user belongs to exactly one organization, and every query for recovery data is filtered by `organization_id`.
+
+## Razorpay Webhook Processing
+
+`POST /api/v1/webhooks/razorpay`
+
+- Reads the **raw** request body (needed for signature verification — don't let anything re-serialize it first)
+- Validates the `X-Razorpay-Signature` header using HMAC-SHA256
+- Requires a Razorpay event ID and rejects payloads that don't have one
+- Validates the payload shape with Pydantic
+- Uses the event ID for idempotency — replays of the same event are safely ignored
+- Stores every event in `webhook_events`, then processes `payment.failed` and `payment.captured`
+- Correlates a later successful payment with an earlier failure so recovery cases can close correctly
 
 ```mermaid
 sequenceDiagram
@@ -78,384 +117,235 @@ sequenceDiagram
     end
 ```
 
-Full target architecture (later phases will fill in the rest):
+## Payment Recovery Workflow
 
-```text
-                    Razorpay
-                  Test / Live
-                       |
-                       | Webhooks
-                       v
-                   FastAPI            <-- Phase 1 (this phase)
-                       |
-                       v
-                  PostgreSQL          <-- Phase 1 (this phase)
-                       |
-                       v
-                Revenue Recovery
-                     Engine           <-- future phase
-                       |
-              +--------+--------+
-              |                 |
-             LLM               ML    <-- future phase
-              |                 |
-              +--------+--------+
-                       v
-                   LangGraph
-                Agent Workflow        <-- future phase
-                       |
-                       v
-                 Policy Engine        <-- future phase
-                       |
-              +--------+--------+
-              v        v        v
-            Retry    Notify   Escalate  <-- future phase
-              |        |        |
-              +--------+--------+
-                       v
-                  Observe Result     <-- future phase
-                       |
-                       v
-                 Revenue Metrics     <-- future phase
-                       |
-                       v
-                React Dashboard      <-- future phase
-```
+1. A failed payment is classified by failure reason.
+2. A recovery case is opened and recovery actions are tracked against it.
+3. Retry attempts can be scheduled, or the case can sit waiting on customer action.
+4. A Razorpay payment link can be generated and a recovery email sent.
+5. A case ends up `RECOVERED`, `EXHAUSTED`, or `CANCELLED`. A matching `payment.captured` event can resolve a case directly.
 
-## Tech Stack
+## AI Recovery Workflow
 
-| Layer          | Technology                       |
-|----------------|-----------------------------------|
-| Web framework  | FastAPI                          |
-| Validation     | Pydantic v2 / pydantic-settings  |
-| ORM            | SQLAlchemy 2.x                   |
-| Migrations     | Alembic                          |
-| Database       | PostgreSQL                       |
-| DB driver      | psycopg 3                        |
-| Payments       | Razorpay Python SDK (Test Mode)  |
-| Testing        | pytest, httpx, FastAPI TestClient|
+RevFlow includes an optional multi-agent recommendation flow: **Strategist → Historical Intelligence → Critic → Final Decision**. It looks at customer history, past recovery outcomes, the failure reason, and policy constraints to propose an action with a confidence score.
 
-Not used yet (future phases): Redis, Celery, LangChain, LangGraph, an LLM, ML scoring,
-React, Docker, CI/CD.
+Every AI decision is stored with its recommended action, confidence, reasoning, provider, model, whether it was accepted, whether it was executed, and the eventual outcome.
 
-## Prerequisites
+Two separate flags control this, and both default off:
+- `AI_ENABLED` — whether recommendations are generated at all
+- `AI_AGENT_ENABLED` — whether an accepted recommendation is allowed to actually execute
 
-- **Python 3.11+** (developed/tested on 3.12)
-- **PostgreSQL** running locally (or accessible via a connection string)
-- A **Razorpay account** with Test Mode access (free to create)
-- **Windows** development environment (commands below use PowerShell/cmd)
-- A tunneling tool to expose localhost to Razorpay's webhook servers — see
-  [Webhook Setup](#webhook-setup) for why we use **zrok**, not ngrok
+AI is not "always on," and an accepted recommendation is not automatically executed unless both flags allow it.
 
-## Environment Variables
+## Background Jobs with Redis and Celery
 
-Copy `.env.example` to `.env` and fill in real values:
+Redis is the Celery broker. Celery workers run the tasks that shouldn't block an API response: payment retries, sending recovery emails, resolving payment-link captures, customer recovery flows, and executing AI-approved actions.
 
-```text
-APP_ENV=development
+**The Celery worker (and Redis) must be running**, or nothing scheduled through them will ever complete — retries and emails will just sit queued.
 
-RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxxxx
-RAZORPAY_KEY_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
-RAZORPAY_WEBHOOK_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
+## Customer Communication and Payment Links
 
-DATABASE_URL=postgresql+psycopg://revenue_recovery:revenue_recovery@localhost:5432/revenue_recovery
+When a recovery action calls for it, RevFlow can generate a Razorpay payment link and send the customer a recovery email containing it. In development, emails go through a console provider (printed to logs); in production, this is backed by an SMTP or Resend provider.
 
-LOG_LEVEL=INFO
-```
+## Database and Tenant Isolation
 
-**Never commit `.env`.** It's already listed in `.gitignore`. Secrets belong only in
-your local `.env` file or your deployment platform's secret manager — never in source
-code. If a secret is committed to Git, it remains recoverable from history forever, even
-after being deleted in a later commit; anyone with repo access (including in a public
-fork or a leaked clone) can extract it.
+PostgreSQL tables:
 
-## Installation (Windows)
+| Table | Purpose |
+|---|---|
+| `organizations` | Merchant tenants |
+| `users` | App users, mapped from Firebase identities |
+| `webhook_events` | Raw Razorpay events, for idempotency and auditing |
+| `payments` | Payment records |
+| `recovery_cases` | One per failed payment being recovered |
+| `recovery_actions` | Actions taken/scheduled against a case |
+| `payment_links` | Razorpay payment links generated for recovery |
+| `recovery_communications` | Emails/messages sent to customers |
+| `ai_recovery_decisions` | Stored AI recommendations and outcomes |
 
-Open PowerShell in the project root:
+Every merchant-owned table carries an `organization_id`, and all backend queries filter on it. There is no cross-tenant read path — if a merchant's dashboard shows no data, the first thing to check is whether `organization_id` actually matches between the user and the rows.
 
-```powershell
-# 1. Create and activate a virtual environment
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+## API Endpoints
 
-# If PowerShell blocks script execution, run this once (as your user, not admin):
-# Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness check |
+| POST | `/api/v1/webhooks/razorpay` | Razorpay webhook receiver |
+| GET | `/api/v1/recovery/stats` | Recovery performance stats |
+| GET | `/api/v1/recovery/cases` | List recovery cases |
+| GET | `/api/v1/recovery/cases/{case_id}` | Case detail |
+| POST | `/api/v1/recovery/cases/{case_id}/retry` | Schedule a retry |
+| POST | `/api/v1/recovery/cases/{case_id}/recover-now` | Trigger immediate recovery |
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Create your .env file
-copy .env.example .env
-# then edit .env in your editor of choice
-```
-
-## Database Setup
-
-Install PostgreSQL locally (e.g. via the official installer, or `winget install
-PostgreSQL.PostgreSQL`), then create the database and user:
-
-```powershell
-# Open psql as the postgres superuser (adjust as needed for your install)
-psql -U postgres
-```
-
-```sql
-CREATE USER revenue_recovery WITH PASSWORD 'revenue_recovery';
-CREATE DATABASE revenue_recovery OWNER revenue_recovery;
-\q
-```
-
-Update `DATABASE_URL` in `.env` if you used different credentials, then run migrations:
-
-```powershell
-alembic upgrade head
-```
-
-This creates the single `webhook_events` table Phase 1 needs. You should see:
-
-```text
-INFO  [alembic.runtime.migration] Running upgrade  -> 120e07d931a3, create webhook_events table
-```
-
-## Running Locally
-
-```powershell
-uvicorn app.main:app --reload
-```
-
-Visit:
-- `http://127.0.0.1:8000/health` — should return `{"status": "healthy"}`
-- `http://127.0.0.1:8000/docs` — interactive Swagger UI, useful for manually inspecting
-  the webhook endpoint's schema
-
-## Razorpay Test Mode Setup
-
-1. **Create a Razorpay account** at [dashboard.razorpay.com](https://dashboard.razorpay.com)
-   if you don't have one. New accounts start in Test Mode.
-2. **Confirm you're in Test Mode** — there's a mode toggle in the dashboard sidebar/header.
-   Test Mode transactions never move real money and don't require KYC to start using.
-3. **Generate Test API keys**: Dashboard → Settings → API Keys → "Generate Test Key".
-   Copy the Key ID (`rzp_test_...`) and Key Secret into `.env` as `RAZORPAY_KEY_ID` and
-   `RAZORPAY_KEY_SECRET`. The secret is shown only once — store it now.
-4. **Create the webhook** (Dashboard → Settings → Webhooks → "+ Add New Webhook"):
-   - **Webhook URL**: your public tunnel URL (see [Webhook Setup](#webhook-setup)) +
-     `/api/v1/webhooks/razorpay`
-   - **Secret**: choose any strong random string. This is *not* your API key secret — it's
-     a separate value used only to sign webhook payloads. Put the same value in `.env` as
-     `RAZORPAY_WEBHOOK_SECRET`.
-   - **Active Events**: check `payment.captured` and `payment.failed` at minimum.
-   - When prompted for an OTP while creating/editing a Test Mode webhook, Razorpay's
-     documented default Test Mode OTP is `754081`.
-5. **Trigger test payments**: use Razorpay's [Test Card/UPI
-   numbers](https://razorpay.com/docs/payments/payments/test-card-upi-details/) against a
-   test Checkout integration, or use the Razorpay Dashboard's "Test payment" flows where
-   available. A test card ending in a specific pattern (check current Razorpay docs, as
-   these test values can change) reliably produces a `payment.failed` event — useful for
-   exercising this phase's primary use case.
-
-> Razorpay's dashboard UI and exact test-value conventions do change over time. If
-> anything above doesn't match what you see, treat the [Razorpay Docs](https://razorpay.com/docs/)
-> as the source of truth, not this README.
-
-## Webhook Setup
-
-Razorpay needs a **public** HTTPS URL to deliver webhooks to — it cannot reach
-`localhost` directly. You need a tunneling tool.
-
-**Important:** Razorpay's webhook configuration currently **blacklists several common
-tunneling domains for security reasons, including `ngrok.io` and `loca.lt`.** Razorpay's
-own documentation recommends **[zrok](https://docs.zrok.io/docs/zrok/getting-started)**
-for exposing localhost during webhook development. Use zrok, not ngrok, or your webhook
-URL will be rejected when you try to save it in the Razorpay dashboard.
-
-```powershell
-# after installing zrok per https://docs.zrok.io/docs/zrok/getting-started
-zrok share public http://127.0.0.1:8000
-```
-
-zrok will print a public HTTPS URL (e.g. `https://abcd1234.share.zrok.io`). Use
-`<that-url>/api/v1/webhooks/razorpay` as the Webhook URL when creating the webhook in the
-Razorpay dashboard (step 4 above).
-
-### Testing `payment.failed` end-to-end
-
-1. Start the app (`uvicorn app.main:app --reload`) and your zrok tunnel.
-2. Trigger a test payment that fails (see step 5 above).
-3. Watch your `uvicorn` terminal — you should see log lines like:
-   ```text
-   2026-01-15 10:22:03 | INFO | app.services.webhook_service | Processed payment.failed | payment_id=pay_... order_id=order_... amount=8500000 currency=INR status=failed error_code=BAD_REQUEST_ERROR
-   ```
-4. Verify signature validation worked (no `400` in the logs for this event).
-5. Verify storage:
-   ```powershell
-   psql -U revenue_recovery -d revenue_recovery -c "SELECT event_id, event_type, status, received_at FROM webhook_events ORDER BY received_at DESC LIMIT 5;"
-   ```
-6. Re-trigger delivery of the **same** event from the Razorpay Dashboard (Webhooks →
-   your webhook → recent deliveries → "Resend") and confirm the log shows
-   `ignored_duplicate` and the row count in `webhook_events` for that `event_id` stays at 1.
-
-## Testing
-
-Tests run entirely offline — no real Razorpay account or live PostgreSQL required. They
-use an in-memory SQLite database and locally-generated HMAC signatures that match
-Razorpay's documented signing algorithm exactly.
-
-```powershell
-pytest -v
-```
-
-Expected: **14 passed**. Coverage includes:
-
-| Test class              | What it verifies                                              |
-|--------------------------|-----------------------------------------------------------------|
-| `TestValidSignature`     | Correctly-signed `payment.failed`/`payment.captured` events are accepted, processed, and persisted with correct fields |
-| `TestInvalidSignature`   | Wrong or missing `X-Razorpay-Signature` → `400`, nothing persisted |
-| `TestUnsupportedEvent`   | Event types outside Phase 1's scope (e.g. `payment.authorized`) are acknowledged (`200`, so Razorpay doesn't retry forever) but not marked "processed" |
-| `TestDuplicateEvent`     | The same `X-Razorpay-Event-Id` delivered twice is only stored/processed once |
-| `TestMalformedPayload`   | Invalid JSON or a body missing required fields → `400`, nothing persisted |
-| `test_health.py`         | `GET /health` → `200` |
-
-## Razorpay Standard Checkout (Test Mode UPI)
-
-Payment Links remain the recovery flow's emailed/customer-facing path. Standard Checkout is
-an additional, small browser page for creating a Razorpay Order and testing direct UPI payment
-events without consuming Payment Link quota.
-
-1. Start PostgreSQL and Redis, then run `uv run alembic upgrade head`.
-2. Start the API with `uv run uvicorn app.main:app --reload` and Celery with
-   `uv run celery -A app.tasks.celery_app worker --loglevel=info --pool=solo`.
-3. Start the same HTTPS tunnel used for the Razorpay webhook, and configure the Test Mode
-   webhook URL as `<tunnel>/api/v1/webhooks/razorpay`. Enable `payment.captured` and
-   `payment.failed` in the Razorpay dashboard.
-4. Open `http://127.0.0.1:8000/api/v1/payments/checkout` and create an INR order.
-5. In Razorpay Checkout select UPI. In Test Mode, enter `success@razorpay` to simulate a
-   capture or `failure@razorpay` to simulate a failure. These are Razorpay's documented test
-   UPI IDs; no real money moves. See Razorpay's
-   [current Test UPI documentation](https://razorpay.com/docs/payments/payments/test-upi-details/).
-6. A successful browser response is signature-verified by `POST /api/v1/payments/checkout/verify`.
-   It deliberately remains `verified_pending_webhook`: only the signed webhook changes payment
-   state. A `payment.captured` event marks the persisted payment `SUCCESS`; a `payment.failed`
-   event enters the existing recovery workflow.
-
-The browser receives only the Test Mode Key ID, order ID, amount in paise, and currency. The
-Razorpay secret never leaves the server. Razorpay's
-[Standard Checkout integration guide](https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/integration-steps/)
-explains why the server must verify the returned signature and why webhooks remain authoritative.
+Full interactive docs live at `http://localhost:8000/docs`.
 
 ## Project Structure
 
-```text
-revenue-recovery/
-|
-+-- app/
-|   +-- main.py                    FastAPI app instance, router registration, lifespan
-|   |
-|   +-- core/
-|   |   +-- config.py              Pydantic Settings (env-var driven configuration)
-|   |   +-- logging.py             Structured logging setup
-|   |
-|   +-- api/routes/
-|   |   +-- health.py              GET /health
-|   |   +-- webhooks.py            POST /api/v1/webhooks/razorpay -- HTTP layer only
-|   |
-|   +-- schemas/
-|   |   +-- webhook.py             Pydantic models for Razorpay's webhook payload shape
-|   |
-|   +-- services/
-|   |   +-- razorpay_client.py     Signature verification (Razorpay-specific mechanics)
-|   |   +-- webhook_service.py     Idempotency + storage business logic
-|   |
-|   +-- models/
-|   |   +-- webhook_event.py       SQLAlchemy ORM model: the webhook_events table
-|   |
-|   +-- db/
-|       +-- session.py             Engine, session factory, declarative Base
-|
-+-- alembic/
-|   +-- env.py                     Wired to app Settings + ORM metadata
-|   +-- versions/
-|       +-- ..._create_webhook_events_table.py
-|
-+-- tests/
-|   +-- conftest.py                Fixtures: in-memory DB, test client, sample payloads
-|   +-- test_health.py
-|   +-- test_webhooks.py
-|
-+-- .env.example
-+-- .gitignore
-+-- requirements.txt
-+-- alembic.ini
-+-- pyproject.toml
-+-- README.md
+```
+revflow/
+├── frontend/              # Next.js dashboard
+│   ├── app/                # pages: landing, login, dashboard, cases, analytics
+│   ├── lib/                 # API client, Firebase config
+│   └── ...
+└── revenue-recovery/       # FastAPI backend
+    ├── app/
+    │   ├── api/              # routers: health, webhooks, recovery, analytics
+    │   ├── services/         # webhook, payment, recovery, AI services
+    │   ├── agents/           # strategist, historical, critic, final decision
+    │   ├── models/           # SQLAlchemy models
+    │   ├── tasks/            # Celery tasks
+    │   └── main.py
+    ├── alembic/              # migrations
+    └── tests/
 ```
 
-**Why this separation matters:**
-- `api/routes/webhooks.py` only knows about HTTP (status codes, headers, request/response
-  bodies). It has no idea what "idempotency" means.
-- `services/razorpay_client.py` only knows Razorpay-specific mechanics (HMAC signature
-  verification). It has no idea what a database is.
-- `services/webhook_service.py` only knows business rules (has this event been seen
-  before? what do we do with a supported vs. unsupported event type?). It has no idea
-  what HTTP status code the caller will eventually return.
+## Prerequisites
 
-If Razorpay changes their signing mechanism, only `razorpay_client.py` changes. If we add
-a second payment provider, `webhook_service.py`'s shape barely changes (the `provider`
-column already exists for exactly this reason) and only the routes/schemas grow.
+- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- Node.js 18+ and npm
+- PostgreSQL (local or hosted)
+- Redis (local or hosted)
+- A Firebase project (Authentication + a service account for Admin SDK)
+- A Razorpay account in test mode
+
+## Environment Variables
+
+Never commit real secrets — `.env` files should always be in `.gitignore`.
+
+**Backend (`revenue-recovery/.env`):**
+
+```
+APP_ENV=development
+DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/revflow
+RAZORPAY_KEY_ID=rzp_test_your_key
+RAZORPAY_KEY_SECRET=your_razorpay_secret
+RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
+FIREBASE_PROJECT_ID=your_firebase_project_id
+FIREBASE_CLIENT_EMAIL=your_firebase_service_account_email
+FIREBASE_PRIVATE_KEY=your_firebase_private_key
+REDIS_URL=redis://localhost:6379/0
+AI_ENABLED=false
+AI_AGENT_ENABLED=false
+```
+
+**Frontend (`frontend/.env.local`):**
+
+```
+NEXT_PUBLIC_FIREBASE_API_KEY=your_firebase_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_firebase_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_firebase_app_id
+BACKEND_URL=http://localhost:8000
+```
+
+## Local Installation
+
+Clone the repo, then set up each app.
+
+**Backend:**
+
+```bash
+cd revenue-recovery
+uv sync
+```
+
+**Frontend:**
+
+```bash
+cd frontend
+npm install
+```
+
+## Database Migration Setup
+
+With `DATABASE_URL` set in `revenue-recovery/.env`:
+
+```bash
+cd revenue-recovery
+uv run alembic upgrade head
+```
+
+## Running the Backend
+
+```bash
+cd revenue-recovery
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+Also start a Celery worker in a separate terminal so background jobs actually run:
+
+```bash
+cd revenue-recovery
+uv run celery -A app.tasks worker --loglevel=info --pool=solo
+```
+
+(`--pool=solo` is the simplest option on Windows; on Linux/macOS you can drop it.)
+
+- Backend: http://localhost:8000
+- Health check: http://localhost:8000/health
+- Swagger docs: http://localhost:8000/docs
+
+## Running the Frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+- Frontend: http://localhost:3000
+
+## Running Tests
+
+```bash
+cd revenue-recovery
+uv run pytest
+```
+
+Frontend linting:
+
+```bash
+cd frontend
+npm run lint
+```
+
+## Razorpay Test-Mode Setup
+
+1. Use your Razorpay **test mode** keys for `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`.
+2. Since Razorpay needs a public URL to deliver webhooks, expose your local backend with a tunnel (e.g. zrok, ngrok) pointing at `http://localhost:8000`.
+3. In the Razorpay dashboard, register a webhook pointing to `https://<your-tunnel-url>/api/v1/webhooks/razorpay`.
+4. Set the same secret you configured in the dashboard as `RAZORPAY_WEBHOOK_SECRET`.
+5. Trigger a test failed payment and confirm a row appears in `webhook_events` and a recovery case is created.
+
+## Troubleshooting
+
+- **Firebase token verification fails** — check `FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` are correct and the private key's newlines weren't mangled.
+- **Expired Firebase token** — the frontend should refresh the ID token; if requests suddenly start 401ing, sign out and back in.
+- **No application user / workspace found** — confirm the first-login workspace-creation step actually ran; check backend logs for that request.
+- **Dashboard shows no data** — almost always an `organization_id` mismatch between the signed-in user and the rows being queried.
+- **PostgreSQL connection errors** — verify `DATABASE_URL`, that Postgres is running, and that migrations have been applied.
+- **Nothing happens after a retry/email is scheduled** — Redis and/or the Celery worker isn't running. Start both.
+- **Invalid Razorpay webhook signature** — the webhook secret in `.env` doesn't match what's configured in the Razorpay dashboard, or the raw body was modified before verification.
+- **Duplicate webhook events** — expected and safe; RevFlow ignores already-processed event IDs by design.
+- **Frontend can't reach the backend** — check the Next.js rewrite config and that `BACKEND_URL` points at the running backend.
+- **Missing environment variables** — the backend will generally fail fast on startup; check the error message for which key is missing.
 
 ## Security Notes
 
-- **Secrets** (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `DATABASE_URL`) live only
-  in `.env`, which is gitignored. Never hardcode them.
-- **Signature verification is mandatory and happens first.** No payload is parsed, logged
-  in detail, or stored until its signature is verified against the raw request body.
-  Razorpay's docs are explicit that the signature must be computed over the *raw* body,
-  not a re-serialized version of parsed JSON — we honor that by reading `request.body()`
-  before any parsing occurs.
-- **We never log secrets.** `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` never
-  appear in any log statement.
-- **We log payment metadata (ID, order ID, amount, status, error code) but not customer
-  PII** (email, phone) at the info level, to limit what's exposed if logs ever leak.
-- **Idempotency is enforced twice**: once at the application level (a `SELECT` before
-  inserting) and once at the database level (a `UNIQUE` constraint on
-  `(provider, event_id)`), so a race between two concurrent webhook deliveries for the
-  same event can't produce duplicate rows.
-- **Internal errors never leak stack traces to the caller.** A `500` response is generic;
-  the real exception is logged server-side only.
-
-## What This Phase Teaches
-
-By the end of Phase 1 you should understand:
-
-- **REST endpoint** — a URL + HTTP method combination your server responds to (e.g.
-  `POST /api/v1/webhooks/razorpay`).
-- **Webhook** — instead of you polling Razorpay for updates, Razorpay proactively `POST`s
-  event data to a URL you control, when something happens on their end.
-- **Webhook signature** — proof that a webhook request genuinely came from Razorpay (and
-  wasn't forged by an attacker who guessed your endpoint URL). Computed as
-  `HMAC-SHA256(raw_request_body, your_webhook_secret)` and sent in the
-  `X-Razorpay-Signature` header; you recompute it yourself and compare.
-- **Event** — a single notification of something that happened (e.g. "this payment
-  failed"). Has a type (`payment.failed`) and a payload (the details).
-- **Event ID** — a unique identifier Razorpay assigns to each webhook delivery, distinct
-  from the Payment ID or Order ID. Used to detect redelivery of the same event.
-- **Idempotency** — designing a system so that processing the same input twice has the
-  same effect as processing it once. Necessary because webhook providers retry delivery
-  (network failures, timeouts) and may send the same event more than once.
-- **FastAPI route** — a Python function decorated to handle a specific endpoint,
-  declaring its expected inputs (headers, body) and output shape.
-- **Service layer** — business logic pulled out of route handlers into separate,
-  independently testable functions/modules, so routes stay thin and logic isn't
-  duplicated if a second entry point (e.g. a CLI command) needs it later.
-- **Database persistence** — writing data to PostgreSQL via SQLAlchemy's ORM, so it
-  survives past the lifetime of a single request/process.
-- **Migration** — a versioned, incremental change to your database schema (here:
-  "create the `webhook_events` table"), managed by Alembic so schema changes are
-  tracked, reproducible, and reversible, rather than made by hand against a live DB.
+- Webhook signatures are verified with HMAC-SHA256 before any payload is trusted.
+- All API requests are authenticated via Firebase ID tokens, verified server-side.
+- All recovery data is scoped to the requesting user's `organization_id` — no cross-tenant access.
+- Webhook processing is idempotent by event ID, so retried deliveries can't create duplicate records.
+- No real secrets, private keys, or customer data are ever committed — `.env` files stay out of version control.
 
 ## Roadmap
 
-**Phase 2 (preview only — not built yet):** will likely introduce the `orders`/`payments`
-domain tables beyond raw event storage, and start deriving structured payment records
-from the events we're now capturing — still no AI, ML, or automated actions. Say
-**"Proceed to Phase 2"** when you're ready and we'll scope it precisely before writing
-any code.
+- Broader AI provider support and tuning of agent confidence thresholds
+- Additional recovery channels beyond email and payment links
+- Deeper analytics on recovery-rate trends by failure reason
+- Expanded automated test coverage across the AI decision pipeline
+
+## Project Status
+
+RevFlow is under active development. Authentication, multi-tenant organizations, webhook processing, the recovery workflow, background jobs, and the dashboard are implemented and working; the AI recommendation/execution layer is feature-flagged and off by default until it's been tuned further.
