@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.core.auth import get_current_user
+from app.core.auth import get_current_organization_id, get_current_user
 from app.db.session import get_db
 from app.models.ai_recovery_decision import AIRecoveryDecision
 from app.models.payment import Payment
@@ -61,8 +61,14 @@ def list_recovery_cases(
     status_filter: str | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
 ) -> list[RecoveryCase]:
-    stmt = select(RecoveryCase).order_by(RecoveryCase.created_at.desc()).limit(min(limit, 200))
+    stmt = (
+        select(RecoveryCase)
+        .where(RecoveryCase.organization_id == org_id)
+        .order_by(RecoveryCase.created_at.desc())
+        .limit(min(limit, 200))
+    )
     if status_filter:
         stmt = stmt.where(RecoveryCase.status == status_filter.upper())
 
@@ -98,9 +104,13 @@ def list_recovery_cases(
 
 
 @router.get("/cases/{case_id}", response_model=RecoveryCaseDetailOut)
-def get_recovery_case(case_id: int, db: Session = Depends(get_db)) -> RecoveryCaseDetailOut:
+def get_recovery_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
+) -> RecoveryCaseDetailOut:
     case = db.get(RecoveryCase, case_id)
-    if case is None:
+    if case is None or case.organization_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery case not found")
 
     payment = db.get(Payment, case.payment_id)
@@ -223,39 +233,52 @@ def get_recovery_case(case_id: int, db: Session = Depends(get_db)) -> RecoveryCa
 
 
 @router.get("/stats", response_model=RecoveryStatsOut)
-def get_recovery_stats(db: Session = Depends(get_db)) -> RecoveryStatsOut:
+def get_recovery_stats(
+    db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
+) -> RecoveryStatsOut:
     total_failed_payments = db.scalar(
-        select(func.count(Payment.id)).where(Payment.status.in_(("FAILED", "RETRYING")))
+        select(func.count(Payment.id)).where(
+            Payment.status.in_(("FAILED", "RETRYING")), Payment.organization_id == org_id
+        )
     ) or 0
 
     total_revenue_at_risk = db.scalar(
         select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
-            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES)
+            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES),
+            RecoveryCase.organization_id == org_id,
         )
     ) or 0
 
     total_recovered_revenue = db.scalar(
         select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
-            RecoveryCase.status == "RECOVERED"
+            RecoveryCase.status == "RECOVERED", RecoveryCase.organization_id == org_id
         )
     ) or 0
 
     active_recovery_cases = db.scalar(
         select(func.count(RecoveryCase.id)).where(
-            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES)
+            RecoveryCase.status.in_(ACTIVE_RECOVERY_CASE_STATUSES),
+            RecoveryCase.organization_id == org_id,
         )
     ) or 0
 
     awaiting_customer_cases = db.scalar(
-        select(func.count(RecoveryCase.id)).where(RecoveryCase.status == "AWAITING_CUSTOMER")
+        select(func.count(RecoveryCase.id)).where(
+            RecoveryCase.status == "AWAITING_CUSTOMER", RecoveryCase.organization_id == org_id
+        )
     ) or 0
 
     recovered_cases = db.scalar(
-        select(func.count(RecoveryCase.id)).where(RecoveryCase.status == "RECOVERED")
+        select(func.count(RecoveryCase.id)).where(
+            RecoveryCase.status == "RECOVERED", RecoveryCase.organization_id == org_id
+        )
     ) or 0
 
     exhausted_cases = db.scalar(
-        select(func.count(RecoveryCase.id)).where(RecoveryCase.status == "EXHAUSTED")
+        select(func.count(RecoveryCase.id)).where(
+            RecoveryCase.status == "EXHAUSTED", RecoveryCase.organization_id == org_id
+        )
     ) or 0
 
     resolved = recovered_cases + exhausted_cases
@@ -274,10 +297,14 @@ def get_recovery_stats(db: Session = Depends(get_db)) -> RecoveryStatsOut:
 
 
 @router.post("/cases/{case_id}/retry", response_model=RetryNowResponse)
-def retry_recovery_case_now(case_id: int, db: Session = Depends(get_db)) -> RetryNowResponse:
-    """Unchanged from Phase 2."""
+def retry_recovery_case_now(
+    case_id: int,
+    db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
+) -> RetryNowResponse:
+    """Unchanged from Phase 2, plus organization scoping."""
     case = db.get(RecoveryCase, case_id)
-    if case is None:
+    if case is None or case.organization_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery case not found")
 
     if case.status not in ("OPEN", "IN_PROGRESS"):
@@ -327,7 +354,11 @@ def retry_recovery_case_now(case_id: int, db: Session = Depends(get_db)) -> Retr
 
 
 @router.post("/cases/{case_id}/recover-now", response_model=CustomerRecoveryTriggerResponse)
-def trigger_customer_recovery_now(case_id: int, db: Session = Depends(get_db)) -> CustomerRecoveryTriggerResponse:
+def trigger_customer_recovery_now(
+    case_id: int,
+    db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
+) -> CustomerRecoveryTriggerResponse:
     """
     Manually (re)trigger customer-assisted recovery for an
     AWAITING_CUSTOMER case -- normally this fires automatically the
@@ -338,7 +369,7 @@ def trigger_customer_recovery_now(case_id: int, db: Session = Depends(get_db)) -
     them rather than creating duplicates.
     """
     case = db.get(RecoveryCase, case_id)
-    if case is None:
+    if case is None or case.organization_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery case not found")
 
     if case.status != "AWAITING_CUSTOMER":
@@ -361,7 +392,10 @@ def trigger_customer_recovery_now(case_id: int, db: Session = Depends(get_db)) -
 
 
 @router.get("/batch", response_model=BatchResultOut)
-def get_batch_result(db: Session = Depends(get_db)) -> BatchResultOut:
+def get_batch_result(
+    db: Session = Depends(get_db),
+    org_id: int = Depends(get_current_organization_id),
+) -> BatchResultOut:
     """
     Read-only report over every RecoveryCase and AIRecoveryDecision that
     already exists -- NOT a trigger to run/simulate anything. Per the
@@ -370,5 +404,5 @@ def get_batch_result(db: Session = Depends(get_db)) -> BatchResultOut:
     """
     from app.services.batch_recovery import run_batch
 
-    result = run_batch(db)
+    result = run_batch(db, org_id)
     return BatchResultOut(**result.__dict__)

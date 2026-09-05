@@ -32,6 +32,9 @@ class RecoveryCommunication(Base):
     __table_args__ = (Index("ix_recovery_communications_recovery_case_id", "recovery_case_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
 
     recovery_case_id: Mapped[int] = mapped_column(
         ForeignKey("recovery_cases.id", ondelete="CASCADE"), nullable=False

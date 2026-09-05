@@ -118,6 +118,7 @@ def create_payment_link(
 
     link = PaymentLink(
         recovery_case_id=case.id,
+        organization_id=case.organization_id,
         razorpay_payment_link_id=result.razorpay_payment_link_id,
         razorpay_short_url=result.short_url,
         amount=payment.amount,
@@ -206,7 +207,11 @@ def send_recovery_email(
         raise NoCustomerEmailError(case.id)
 
     communication = RecoveryCommunication(
-        recovery_case_id=case.id, channel="EMAIL", type="PAYMENT_LINK", status="PENDING"
+        recovery_case_id=case.id,
+        organization_id=case.organization_id,
+        channel="EMAIL",
+        type="PAYMENT_LINK",
+        status="PENDING",
     )
     db.add(communication)
     db.flush()  # protected by the partial unique index against a concurrent duplicate

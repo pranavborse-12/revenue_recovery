@@ -10,6 +10,7 @@ dependencies = [
     "firebase-admin>=6.6.0",
     "groq>=1.7.0",
     "mistralai>=2.9.4",
+    "openai>=1.68.0",
     "psycopg[binary]>=3.3.5",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.0.1",

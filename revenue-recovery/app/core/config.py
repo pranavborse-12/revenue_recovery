@@ -88,6 +88,23 @@ class Settings(BaseSettings):
     AI_CRITIC_PROVIDER: str = "groq"
     AI_CRITIC_MODEL: str = "openai/gpt-oss-120b"
 
+    # Kimi (Moonshot) uses an OpenAI-compatible API.
+    KIMI_API_KEY: str = ""
+    KIMI_BASE_URL: str = "https://api.moonshot.ai/v1"
+    KIMI_MODEL: str = "kimi-k2-0711-preview"
+
+    # --- Multi-tenant webhook attribution (Phase 5) ---
+    # Razorpay credentials (RAZORPAY_KEY_ID/SECRET/WEBHOOK_SECRET above)
+    # are global to this deployment -- there is exactly one Razorpay
+    # account, so an inbound webhook carries no tenant identifier of its
+    # own. Until this becomes a genuinely multi-merchant deployment
+    # (per-organization Razorpay credentials/webhook URLs), every
+    # Payment created from a live webhook is attributed to this single
+    # configured organization. None (the default) means webhook-created
+    # Payments are left with organization_id=NULL, matching pre-Phase-5
+    # behavior, until an operator sets this.
+    DEFAULT_ORGANIZATION_ID: int | None = None
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"

@@ -53,7 +53,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <div className="w-9 h-9 bg-slate-950 rounded-xl flex items-center justify-center transition-transform group-hover:scale-105 shadow-sm">
               <RefreshCcw className="w-5 h-5 text-white" />
             </div>
-            <span className="font-display font-bold text-xl tracking-tight text-slate-950">Revenue</span>
+            <span className="font-display font-bold text-xl tracking-tight text-slate-950">RevFlow</span>
           </Link>
 
           <nav className="space-y-1">
@@ -101,7 +101,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="w-8 h-8 bg-slate-900 rounded-lg flex items-center justify-center">
             <RefreshCcw className="w-5 h-5 text-white" />
           </div>
-          <span className="font-display font-bold text-lg tracking-tight">Revenue</span>
+          <span className="font-display font-bold text-lg tracking-tight">RevFlow</span>
         </Link>
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}

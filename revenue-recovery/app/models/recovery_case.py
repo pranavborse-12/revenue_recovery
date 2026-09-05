@@ -64,6 +64,9 @@ class RecoveryCase(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
 
     payment_id: Mapped[int] = mapped_column(
         ForeignKey("payments.id", ondelete="CASCADE"), nullable=False

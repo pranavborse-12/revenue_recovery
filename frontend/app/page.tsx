@@ -52,7 +52,7 @@ export default function LandingPage() {
               <div className="w-8 h-8 bg-slate-900 rounded-lg flex items-center justify-center">
                 <RefreshCcw className="w-5 h-5 text-white" />
               </div>
-              <span className="font-display font-bold text-xl tracking-tight">Revenue Recovery</span>
+              <span className="font-display font-bold text-xl tracking-tight">RevFlow</span>
             </Link>
             <div className="hidden md:flex items-center gap-6">
               {NAV_LINKS.map(link => (
@@ -307,7 +307,7 @@ export default function LandingPage() {
             <div className="max-w-2xl mx-auto space-y-6 relative z-10">
               <h2 className="text-4xl md:text-5xl font-bold tracking-tight">Stop losing revenue to failed payments.</h2>
               <p className="text-xl text-slate-600 leading-relaxed">
-                Join high-growth businesses using Revenue Recovery to optimize their billing performance and improve customer retention.
+                Join high-growth businesses using RevFlow to optimize their billing performance and improve customer retention.
               </p>
               <div className="pt-6">
                 <Link href="/login">
@@ -328,10 +328,10 @@ export default function LandingPage() {
               <div className="w-6 h-6 bg-slate-900 rounded flex items-center justify-center">
                 <RefreshCcw className="w-3.5 h-3.5 text-white" />
               </div>
-              <span className="font-display font-bold text-lg tracking-tight">Revenue Recovery</span>
+                  <span className="font-display font-bold text-lg tracking-tight">RevFlow</span>
             </div>
             <p className="text-sm text-slate-400 font-medium">
-              &copy; {new Date().getFullYear()} Revenue Recovery. All rights reserved.
+              &copy; {new Date().getFullYear()} RevFlow. All rights reserved.
             </p>
             <div className="flex items-center gap-6">
               <Link href="#" className="text-xs font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors">Privacy</Link>

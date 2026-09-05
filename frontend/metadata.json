@@ -1,5 +1,5 @@
 {
-  "name": "Revenue Recovery",
+  "name": "RevFlow",
   "description": "Turn failed payments into recovered revenue with intelligent recovery workflows and automated payment retries.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

@@ -58,6 +58,9 @@ class Payment(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
 
     razorpay_payment_id: Mapped[str] = mapped_column(
         String(64), nullable=False, unique=True, index=True

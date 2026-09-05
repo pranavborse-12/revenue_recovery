@@ -36,27 +36,41 @@ class BatchResult:
     ai_policy_rejections: int
 
 
-def run_batch(db: Session) -> BatchResult:
-    cases_processed = db.scalar(select(func.count(RecoveryCase.id))) or 0
+def run_batch(db: Session, organization_id: int) -> BatchResult:
+    """
+    Same measurement as before, scoped to a single organization.
+    `organization_id` is required (not optional) so a caller can never
+    forget to scope it and get a cross-tenant report by accident -- the
+    one deployment-wide report this used to produce is no longer a
+    supported mode now that RecoveryCase etc. are tenant-owned.
+    """
+    cases_processed = (
+        db.scalar(select(func.count(RecoveryCase.id)).where(RecoveryCase.organization_id == organization_id))
+        or 0
+    )
 
     revenue_at_risk = (
         db.scalar(
             select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
-                RecoveryCase.status.in_(("OPEN", "IN_PROGRESS", "AWAITING_CUSTOMER"))
+                RecoveryCase.status.in_(("OPEN", "IN_PROGRESS", "AWAITING_CUSTOMER")),
+                RecoveryCase.organization_id == organization_id,
             )
         )
         or 0
     )
     recovered_revenue = (
         db.scalar(
-            select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(RecoveryCase.status == "RECOVERED")
+            select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
+                RecoveryCase.status == "RECOVERED", RecoveryCase.organization_id == organization_id
+            )
         )
         or 0
     )
     unrecovered_terminal_revenue = (
         db.scalar(
             select(func.coalesce(func.sum(RecoveryCase.amount), 0)).where(
-                RecoveryCase.status.in_(("EXHAUSTED", "CANCELLED"))
+                RecoveryCase.status.in_(("EXHAUSTED", "CANCELLED")),
+                RecoveryCase.organization_id == organization_id,
             )
         )
         or 0
@@ -64,34 +78,74 @@ def run_batch(db: Session) -> BatchResult:
     resolved_revenue = recovered_revenue + unrecovered_terminal_revenue
     revenue_recovery_rate = (recovered_revenue / resolved_revenue) if resolved_revenue > 0 else 0.0
 
-    recovered_cases = db.scalar(select(func.count(RecoveryCase.id)).where(RecoveryCase.status == "RECOVERED")) or 0
+    recovered_cases = (
+        db.scalar(
+            select(func.count(RecoveryCase.id)).where(
+                RecoveryCase.status == "RECOVERED", RecoveryCase.organization_id == organization_id
+            )
+        )
+        or 0
+    )
 
     escalated_case_ids = set(
         db.scalars(
             select(AIRecoveryDecision.recovery_case_id).where(
                 AIRecoveryDecision.recommended_action == "MANUAL_REVIEW",
                 AIRecoveryDecision.executed.is_(True),
+                AIRecoveryDecision.organization_id == organization_id,
             )
         )
     )
-    exhausted_case_ids = set(db.scalars(select(RecoveryCase.id).where(RecoveryCase.status == "EXHAUSTED")))
+    exhausted_case_ids = set(
+        db.scalars(
+            select(RecoveryCase.id).where(
+                RecoveryCase.status == "EXHAUSTED", RecoveryCase.organization_id == organization_id
+            )
+        )
+    )
     escalated_cases = len(exhausted_case_ids & escalated_case_ids)
     stopped_cases = len(exhausted_case_ids - escalated_case_ids)
 
     retries_executed = (
-        db.scalar(select(func.count(RecoveryAction.id)).where(RecoveryAction.executed_at.is_not(None))) or 0
+        db.scalar(
+            select(func.count(RecoveryAction.id)).where(
+                RecoveryAction.executed_at.is_not(None), RecoveryAction.organization_id == organization_id
+            )
+        )
+        or 0
     )
-    payment_links_created = db.scalar(select(func.count(PaymentLink.id))) or 0
+    payment_links_created = (
+        db.scalar(select(func.count(PaymentLink.id)).where(PaymentLink.organization_id == organization_id)) or 0
+    )
     emails_sent = (
-        db.scalar(select(func.count(RecoveryCommunication.id)).where(RecoveryCommunication.status == "SENT")) or 0
+        db.scalar(
+            select(func.count(RecoveryCommunication.id)).where(
+                RecoveryCommunication.status == "SENT",
+                RecoveryCommunication.organization_id == organization_id,
+            )
+        )
+        or 0
     )
 
-    ai_decisions = db.scalar(select(func.count(AIRecoveryDecision.id))) or 0
+    ai_decisions = (
+        db.scalar(select(func.count(AIRecoveryDecision.id)).where(AIRecoveryDecision.organization_id == organization_id))
+        or 0
+    )
     ai_decisions_executed = (
-        db.scalar(select(func.count(AIRecoveryDecision.id)).where(AIRecoveryDecision.executed.is_(True))) or 0
+        db.scalar(
+            select(func.count(AIRecoveryDecision.id)).where(
+                AIRecoveryDecision.executed.is_(True), AIRecoveryDecision.organization_id == organization_id
+            )
+        )
+        or 0
     )
     ai_policy_rejections = (
-        db.scalar(select(func.count(AIRecoveryDecision.id)).where(AIRecoveryDecision.accepted.is_(False))) or 0
+        db.scalar(
+            select(func.count(AIRecoveryDecision.id)).where(
+                AIRecoveryDecision.accepted.is_(False), AIRecoveryDecision.organization_id == organization_id
+            )
+        )
+        or 0
     )
 
     return BatchResult(

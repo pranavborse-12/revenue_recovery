@@ -43,7 +43,10 @@ from app.models.payment import Payment  # noqa: E402
 from app.models.payment_link import PaymentLink  # noqa: E402
 from app.models.recovery_action import RecoveryAction  # noqa: E402
 from app.models.recovery_case import RecoveryCase  # noqa: E402
+from app.models.organization import Organization  # noqa: E402
+from app.models.user import User  # noqa: E402
 from app.services.failure_classifier import classify  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 SCENARIOS = [
     ("BAD_REQUEST_ERROR", "Insufficient balance in the customer's account", "insufficient_funds", "card"),
@@ -83,11 +86,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _seed_one_case(db, counter: int, error_code: str, error_description: str, error_reason: str, method: str) -> None:
+def _seed_one_case(db, organization_id: int, rng: random.Random, counter: int, error_code: str, error_description: str, error_reason: str, method: str) -> None:
     category = classify(error_code, error_description, error_reason)
     dynamics = CATEGORY_DYNAMICS[category]
-    amount = random.randint(500, 500_000)  # paise: ~Rs 5 - Rs 5,000
-    created_at = _utcnow() - timedelta(days=random.randint(1, 180))
+    amount = rng.randint(500, 500_000)  # paise: ~Rs 5 - Rs 5,000
+    created_at = _utcnow() - timedelta(days=rng.randint(1, 180))
 
     payment = Payment(
         razorpay_payment_id=f"pay_SYNTH{counter:08d}",
@@ -95,22 +98,22 @@ def _seed_one_case(db, counter: int, error_code: str, error_description: str, er
         amount=amount, currency="INR", status="FAILED",
         failure_code=error_code, failure_description=error_description,
         failure_reason=error_reason, failure_category=category,
-        is_synthetic=True, razorpay_created_at=created_at,
+        is_synthetic=True, organization_id=organization_id, razorpay_created_at=created_at,
     )
     db.add(payment)
     db.flush()
 
     case = RecoveryCase(
-        payment_id=payment.id, failure_category=category, amount=amount,
+        payment_id=payment.id, organization_id=organization_id, failure_category=category, amount=amount,
         status="IN_PROGRESS", current_strategy="RETRY_PAYMENT", attempt_count=1,
         created_at=created_at, updated_at=created_at,
     )
     db.add(case)
     db.flush()
 
-    retry_recovered = random.random() < dynamics["retry_recovery_rate"]
+    retry_recovered = rng.random() < dynamics["retry_recovery_rate"]
     db.add(RecoveryAction(
-        recovery_case_id=case.id, action_type="RETRY_PAYMENT",
+        recovery_case_id=case.id, organization_id=organization_id, action_type="RETRY_PAYMENT",
         status="SUCCESS" if retry_recovered else "FAILED", attempt_number=1,
         scheduled_at=created_at, executed_at=created_at + timedelta(minutes=30),
         result="synthetic: retry recovered" if retry_recovered else "synthetic: retry failed",
@@ -123,16 +126,16 @@ def _seed_one_case(db, counter: int, error_code: str, error_description: str, er
         db.flush()
         return
 
-    tried_link = random.random() < LINK_ATTEMPT_PROBABILITY_AFTER_RETRY_FAILS
+    tried_link = rng.random() < LINK_ATTEMPT_PROBABILITY_AFTER_RETRY_FAILS
     if not tried_link:
         case.status = "EXHAUSTED"
         case.resolved_at = created_at + timedelta(hours=1)
         db.flush()
         return
 
-    link_recovered = random.random() < dynamics["link_recovery_rate"]
+    link_recovered = rng.random() < dynamics["link_recovery_rate"]
     db.add(PaymentLink(
-        recovery_case_id=case.id, razorpay_payment_link_id=f"plink_SYNTH{counter:08d}",
+        recovery_case_id=case.id, organization_id=organization_id, razorpay_payment_link_id=f"plink_SYNTH{counter:08d}",
         razorpay_short_url=f"https://rzp.io/i/plink_SYNTH{counter:08d}",
         amount=amount, currency="INR", status="PAID" if link_recovered else "CREATED",
         created_at=created_at + timedelta(hours=1),
@@ -146,9 +149,33 @@ def main(per_scenario: int) -> None:
     db = SessionLocal()
     counter = 1
     try:
+        organization = db.scalar(select(Organization).where(Organization.name == "AcmeCloud Technologies"))
+        if organization is None:
+            organization = Organization(name="AcmeCloud Technologies", industry="Software", is_demo=True)
+            db.add(organization)
+            db.flush()
+        else:
+            organization.is_demo = True
+        user = db.scalar(select(User).where(User.email == "demo@revflow.ai"))
+        if user is None:
+            db.add(User(email="demo@revflow.ai", organization_id=organization.id, role="admin"))
+        else:
+            user.organization_id, user.role = organization.id, "admin"
+
+        existing_synthetic = list(db.scalars(select(Payment).where(Payment.is_synthetic.is_(True))))
+        if existing_synthetic:
+            for payment in existing_synthetic:
+                payment.organization_id = organization.id
+            for model in (RecoveryCase, RecoveryAction, PaymentLink):
+                db.query(model).filter(model.organization_id.is_(None)).update({"organization_id": organization.id})
+            db.commit()
+            print(f"Demo merchant already seeded: {len(existing_synthetic)} synthetic recovery trajectories associated with AcmeCloud Technologies.")
+            return
+
+        rng = random.Random(20260905)
         for error_code, error_description, error_reason, method in SCENARIOS:
             for _ in range(per_scenario):
-                _seed_one_case(db, counter, error_code, error_description, error_reason, method)
+                _seed_one_case(db, organization.id, rng, counter, error_code, error_description, error_reason, method)
                 counter += 1
         db.commit()
         print(f"Seeded {counter - 1} synthetic recovery trajectories across {len(SCENARIOS)} scenarios.")

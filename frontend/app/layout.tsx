@@ -14,10 +14,10 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'Revenue Recovery | Turn failed payments into revenue',
+  title: 'RevFlow | Turn failed payments into revenue',
   description: 'Intelligent payment recovery for high-growth businesses. Automatically detect, understand, and recover failed payments.',
   openGraph: {
-    title: 'Revenue Recovery',
+    title: 'RevFlow',
     description: 'Turn failed payments into recovered revenue with intelligent recovery workflows.',
     type: 'website',
   },

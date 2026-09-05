@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.payment import Payment
 from app.schemas.webhook import RazorpayPaymentEntity
@@ -70,6 +71,15 @@ def upsert_payment_from_event(
         currency=entity.currency,
         razorpay_created_at=datetime.fromtimestamp(entity.created_at, tz=timezone.utc),
         status="PENDING",
+        # See config.Settings.DEFAULT_ORGANIZATION_ID's docstring: this
+        # deployment has one global Razorpay account, so a live webhook
+        # carries no tenant identifier -- new Payments are attributed to
+        # whichever single organization is configured (None/NULL until
+        # an operator sets it, which is a no-op change from pre-Phase-5
+        # behavior). Synthetic/demo Payments are never created via this
+        # path -- they're inserted directly by the seed script with an
+        # explicit organization_id.
+        organization_id=get_settings().DEFAULT_ORGANIZATION_ID,
     )
     if is_new:
         db.add(payment)

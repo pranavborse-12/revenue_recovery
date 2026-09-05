@@ -37,7 +37,7 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md">
         <div className="mb-8 flex items-center justify-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-950 shadow-sm"><RefreshCcw className="h-5 w-5 text-white" /></div>
-          <span className="font-display text-xl font-bold tracking-tight">Revenue</span>
+          <span className="font-display text-xl font-bold tracking-tight">RevFlow</span>
         </div>
         <section className="rounded-3xl border border-slate-200/90 bg-white p-7 shadow-xl shadow-slate-200/50 sm:p-9">
           <div className="mb-8">

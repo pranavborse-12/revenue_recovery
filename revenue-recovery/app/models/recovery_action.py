@@ -56,6 +56,9 @@ class RecoveryAction(Base):
     __tablename__ = "recovery_actions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
 
     recovery_case_id: Mapped[int] = mapped_column(
         ForeignKey("recovery_cases.id", ondelete="CASCADE"), nullable=False, index=True

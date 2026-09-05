@@ -102,7 +102,6 @@ def _call_mistral(model: str, system_prompt: str, user_content: str) -> str | No
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            response_format={"type": "json_object"},
         )
         return response.choices[0].message.content
     except Exception as exc:
@@ -121,7 +120,6 @@ def _call_groq(model: str, system_prompt: str, user_content: str) -> str | None:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            response_format={"type": "json_object"},
         )
         return response.choices[0].message.content
     except Exception as exc:
@@ -129,7 +127,31 @@ def _call_groq(model: str, system_prompt: str, user_content: str) -> str | None:
         return None
 
 
-_PROVIDER_CALLERS = {"mistral": _call_mistral, "groq": _call_groq}
+def _call_kimi(model: str, system_prompt: str, user_content: str) -> str | None:
+    """Call Kimi through its OpenAI-compatible chat-completions API."""
+    try:
+        from openai import OpenAI  # local import keeps this SDK optional at import time
+
+        settings = get_settings()
+        # AI_API_KEY is retained as a migration fallback for deployments that
+        # replaced the old Mistral key without renaming the environment variable.
+        api_key = settings.KIMI_API_KEY or settings.AI_API_KEY
+        client = OpenAI(api_key=api_key, base_url=settings.KIMI_BASE_URL)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+    except Exception as exc:
+        logger.warning("Kimi call failed (model=%s): %s", model, exc)
+        return None
+
+
+_PROVIDER_CALLERS = {"mistral": _call_mistral, "groq": _call_groq, "kimi": _call_kimi}
 
 
 def run_agent(*, provider: str, model: str, system_prompt: str, user_content: str, schema: type[BaseModel]):
@@ -143,6 +165,10 @@ def run_agent(*, provider: str, model: str, system_prompt: str, user_content: st
     if provider == "mistral" and (not settings.AI_ENABLED or not settings.AI_API_KEY):
         return None
     if provider == "groq" and (not settings.AI_ENABLED or not settings.GROQ_API_KEY):
+        return None
+    if provider == "kimi" and (
+        not settings.AI_ENABLED or not (settings.KIMI_API_KEY or settings.AI_API_KEY)
+    ):
         return None
 
     caller = _PROVIDER_CALLERS.get(provider)

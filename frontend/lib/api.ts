@@ -148,8 +148,10 @@ export interface BatchAnalytics {
 const BASE_URL = '/api';
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = auth ? await auth.currentUser?.getIdToken() : undefined;
-  const response = await fetch(`${BASE_URL}${path}`, {
+  const currentUser = auth?.currentUser;
+  let token = currentUser ? await currentUser.getIdToken() : undefined;
+
+  const request = () => fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -157,6 +159,12 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   });
+
+  let response = await request();
+  if (response.status === 401 && currentUser) {
+    token = await currentUser.getIdToken(true);
+    response = await request();
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'An unexpected error occurred' }));

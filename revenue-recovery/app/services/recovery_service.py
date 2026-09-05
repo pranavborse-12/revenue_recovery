@@ -89,6 +89,7 @@ def on_payment_failed(db: Session, payment: Payment) -> RecoveryDecision:
 
     case = RecoveryCase(
         payment_id=payment.id,
+        organization_id=payment.organization_id,
         failure_category=category,
         amount=payment.amount,
         status="OPEN",
@@ -199,8 +200,6 @@ def record_action_result(
     logger.info(
         "recovery_case_id=%s action_id=%s failed (%s)", case.id, action.id, detail,
     )
-    if _try_live_agent(db, case, recovery_action_id=action.id):
-        return case
     logger.info("recovery_case_id=%s scheduling next attempt (deterministic default)", case.id)
     _schedule_next_action(db, case, case.current_strategy or "MANUAL_REVIEW")
     return case
@@ -247,6 +246,7 @@ def _schedule_next_action(db: Session, case: RecoveryCase, strategy: str) -> Rec
 
     action = RecoveryAction(
         recovery_case_id=case.id,
+        organization_id=case.organization_id,
         action_type=strategy,
         status="PENDING",
         attempt_number=next_attempt_number,

@@ -97,7 +97,8 @@ def _record_agent_opinion(db, case, recovery_action_id, role, provider, model, o
     """
     if opinion is None:
         db.add(AIRecoveryDecision(
-            recovery_case_id=case.id, recovery_action_id=recovery_action_id,
+            recovery_case_id=case.id, organization_id=case.organization_id,
+            recovery_action_id=recovery_action_id,
             recommended_action="NO_RESPONSE", recommended_delay_minutes=None,
             confidence=0.0, reason="agent call failed or returned invalid output",
             model=model, agent_role=role, provider=provider,
@@ -115,7 +116,8 @@ def _record_agent_opinion(db, case, recovery_action_id, role, provider, model, o
         delay, confidence, reason = None, opinion.confidence, f"{opinion.concerns} | {opinion.reason}"[:512]
 
     db.add(AIRecoveryDecision(
-        recovery_case_id=case.id, recovery_action_id=recovery_action_id,
+        recovery_case_id=case.id, organization_id=case.organization_id,
+        recovery_action_id=recovery_action_id,
         recommended_action=action, recommended_delay_minutes=delay,
         confidence=confidence, reason=reason, model=model,
         agent_role=role, provider=provider, accepted=True, rejection_reason=None, executed=False,
@@ -184,16 +186,41 @@ def get_multi_agent_recommendation(
     if not settings.AI_ENABLED:
         return None
 
+    action_id_filter = (
+        AIRecoveryDecision.recovery_action_id.is_(None)
+        if recovery_action_id is None
+        else AIRecoveryDecision.recovery_action_id == recovery_action_id
+    )
+    already_decided = db.scalars(
+        select(AIRecoveryDecision.id).where(
+            AIRecoveryDecision.recovery_case_id == case.id,
+            AIRecoveryDecision.agent_role == "final",
+            action_id_filter,
+        )
+    ).first()
+    if already_decided is not None:
+        logger.info(
+            "recovery_case_id=%s: final AI decision already recorded for "
+            "recovery_action_id=%s -- skipping duplicate agent run",
+            case.id, recovery_action_id,
+        )
+        return None
+    
     context = recovery_context.build_recovery_context(db, case)
     evidence = historical_intelligence.get_recovery_evidence(db, case.failure_category)
     evidence_dict = historical_intelligence.evidence_to_prompt_dict(evidence)
     base_payload = json.dumps({**context, "historical_evidence": evidence_dict})
+    strategist_model = (
+        settings.KIMI_MODEL
+        if settings.AI_STRATEGIST_PROVIDER == "kimi"
+        else settings.AI_MODEL
+    )
 
     strategist = run_agent(
-        provider=settings.AI_STRATEGIST_PROVIDER, model=settings.AI_MODEL,
+        provider=settings.AI_STRATEGIST_PROVIDER, model=strategist_model,
         system_prompt=STRATEGIST_SYSTEM_PROMPT, user_content=base_payload, schema=AIRecommendation,
     )
-    _record_agent_opinion(db, case, recovery_action_id, "strategist", settings.AI_STRATEGIST_PROVIDER, settings.AI_MODEL, strategist)
+    _record_agent_opinion(db, case, recovery_action_id, "strategist", settings.AI_STRATEGIST_PROVIDER, strategist_model, strategist)
 
     historian = run_agent(
         provider=settings.AI_HISTORICAL_PROVIDER, model=settings.AI_HISTORICAL_MODEL,
@@ -237,7 +264,8 @@ def try_agent_intervention(
     if not accepted or recommendation.action == "WAIT":
         db.add(
             AIRecoveryDecision(
-                recovery_case_id=case.id, recovery_action_id=recovery_action_id,
+                recovery_case_id=case.id, organization_id=case.organization_id,
+                recovery_action_id=recovery_action_id,
                 recommended_action=recommendation.action, recommended_delay_minutes=recommendation.delay_minutes,
                 confidence=recommendation.confidence, reason=recommendation.reason, model=final_model,
                 agent_role="final", provider=None,
@@ -270,7 +298,8 @@ def try_agent_intervention(
         succeeded = False
 
     decision = AIRecoveryDecision(
-        recovery_case_id=case.id, recovery_action_id=recovery_action_id,
+        recovery_case_id=case.id, organization_id=case.organization_id,
+        recovery_action_id=recovery_action_id,
         recommended_action=recommendation.action, recommended_delay_minutes=recommendation.delay_minutes,
         confidence=recommendation.confidence, reason=recommendation.reason, model=final_model,
         agent_role="final", provider=None,
