@@ -88,10 +88,14 @@ class Settings(BaseSettings):
     AI_CRITIC_PROVIDER: str = "groq"
     AI_CRITIC_MODEL: str = "openai/gpt-oss-120b"
 
-    # Kimi (Moonshot) uses an OpenAI-compatible API.
-    KIMI_API_KEY: str = ""
-    KIMI_BASE_URL: str = "https://api.moonshot.ai/v1"
-    KIMI_MODEL: str = "kimi-k2-0711-preview"
+    # OpenRouter -- OpenAI-compatible API, one key routing to many
+    # models. Set AI_STRATEGIST_PROVIDER=openrouter (or point
+    # AI_HISTORICAL_PROVIDER/AI_CRITIC_PROVIDER at it) and set
+    # OPENROUTER_MODEL to whichever model you've picked on
+    # https://openrouter.ai/models, e.g. "meta-llama/llama-3.3-70b-instruct:free".
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = ""
 
     # --- Multi-tenant webhook attribution (Phase 5) ---
     # Razorpay credentials (RAZORPAY_KEY_ID/SECRET/WEBHOOK_SECRET above)

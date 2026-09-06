@@ -1,31 +1,3 @@
-"""
-Provider-calling layer: turns (provider, model, system_prompt, user
-content) into a validated Pydantic object or None. Every failure mode
-(disabled, missing key, network error, malformed JSON, schema-invalid
-output) collapses to None -- callers always safely fall back without a
-try/except of their own.
-
-Multi-agent addition: run_agent() is the shared mechanic used by all
-three agents (recovery_agent.py picks the system prompt + schema per
-agent role). AIRecoveryService/get_ai_recovery_service() are kept
-exactly as they were -- the single-provider Mistral path, still used by
-the audit-only fallback in recovery_service.py for anything that hasn't
-been moved onto the multi-agent flow.
-
-Provider verification notes (this change): Groq's Python SDK
-(`from groq import Groq; client.chat.completions.create(model=...,
-messages=[...], response_format={"type": "json_object"})`) confirmed
-against Groq's own current docs -- same OpenAI-compatible shape used
-elsewhere. Model IDs: `openai/gpt-oss-120b` confirmed current,
-production-tier. `qwen/qwen3.6-27b` confirmed current but documented by
-Groq as preview-tier (evaluation use, may be discontinued without
-notice) -- the person confirmed proceeding with this despite that, in
-place of "Qwen 3.8 27B" (requested but no clean, confirmed model-ID
-string found for it). Run scripts/inspect_mistral_response.py and a
-Groq equivalent once against real keys before trusting any of this in
-Celery, the same discipline used for Razorpay earlier in this project.
-"""
-
 import json
 
 from pydantic import BaseModel, ValidationError
@@ -127,16 +99,13 @@ def _call_groq(model: str, system_prompt: str, user_content: str) -> str | None:
         return None
 
 
-def _call_kimi(model: str, system_prompt: str, user_content: str) -> str | None:
-    """Call Kimi through its OpenAI-compatible chat-completions API."""
+def _call_openrouter(model: str, system_prompt: str, user_content: str) -> str | None:
+    """Call OpenRouter through its OpenAI-compatible chat-completions API."""
     try:
         from openai import OpenAI  # local import keeps this SDK optional at import time
 
         settings = get_settings()
-        # AI_API_KEY is retained as a migration fallback for deployments that
-        # replaced the old Mistral key without renaming the environment variable.
-        api_key = settings.KIMI_API_KEY or settings.AI_API_KEY
-        client = OpenAI(api_key=api_key, base_url=settings.KIMI_BASE_URL)
+        client = OpenAI(api_key=settings.OPENROUTER_API_KEY, base_url=settings.OPENROUTER_BASE_URL)
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -147,11 +116,11 @@ def _call_kimi(model: str, system_prompt: str, user_content: str) -> str | None:
         )
         return response.choices[0].message.content
     except Exception as exc:
-        logger.warning("Kimi call failed (model=%s): %s", model, exc)
+        logger.warning("OpenRouter call failed (model=%s): %s", model, exc)
         return None
 
 
-_PROVIDER_CALLERS = {"mistral": _call_mistral, "groq": _call_groq, "kimi": _call_kimi}
+_PROVIDER_CALLERS = {"mistral": _call_mistral, "groq": _call_groq, "openrouter": _call_openrouter}
 
 
 def run_agent(*, provider: str, model: str, system_prompt: str, user_content: str, schema: type[BaseModel]):
@@ -166,9 +135,7 @@ def run_agent(*, provider: str, model: str, system_prompt: str, user_content: st
         return None
     if provider == "groq" and (not settings.AI_ENABLED or not settings.GROQ_API_KEY):
         return None
-    if provider == "kimi" and (
-        not settings.AI_ENABLED or not (settings.KIMI_API_KEY or settings.AI_API_KEY)
-    ):
+    if provider == "openrouter" and (not settings.AI_ENABLED or not settings.OPENROUTER_API_KEY):
         return None
 
     caller = _PROVIDER_CALLERS.get(provider)

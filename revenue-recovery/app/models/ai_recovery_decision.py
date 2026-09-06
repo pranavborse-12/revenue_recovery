@@ -54,8 +54,8 @@ class AIRecoveryDecision(Base):
     # "strategist" | "historical_analyst" | "critic" | "final". Default
     # "final" so any pre-multi-agent rows read sensibly without a backfill.
     agent_role: Mapped[str] = mapped_column(String(24), nullable=False, default="final")
-    # "mistral" | "groq" | None (None for a "final" row -- a
-    # reconciliation of the three above it, not its own provider call).
+    # "mistral" | "groq" | "openrouter" | None (None for a "final" row --
+    # a reconciliation of the three above it, not its own provider call).
     provider: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)

@@ -211,8 +211,8 @@ def get_multi_agent_recommendation(
     evidence_dict = historical_intelligence.evidence_to_prompt_dict(evidence)
     base_payload = json.dumps({**context, "historical_evidence": evidence_dict})
     strategist_model = (
-        settings.KIMI_MODEL
-        if settings.AI_STRATEGIST_PROVIDER == "kimi"
+        settings.OPENROUTER_MODEL
+        if settings.AI_STRATEGIST_PROVIDER == "openrouter"
         else settings.AI_MODEL
     )
 
